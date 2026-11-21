@@ -299,10 +299,13 @@ function connect() {
       es.close(); openRunReset(tab, chosen); return;
     }
   };
+  let basePending = false;
   es.onmessage = (e) => {
     if (gotDone) return;
     let ev; try { ev = JSON.parse(e.data); } catch { return; }
-    if (ev.t === 'done') { gotDone = true; es.close(); }
+    if (ev.t === 'baseline') basePending = ev.status === 'started' || ev.status === 'submitted';
+    if (ev.t === 'done') S.sawDone = true;
+    if (S.sawDone && !basePending && (ev.t === 'done' || ev.t === 'baseline')) { gotDone = true; es.close(); }
     queue.push(ev);
     if (!scheduled) {
       scheduled = true;
@@ -367,6 +370,7 @@ function handle(ev, animate) {
       if (!S.tabChosen) setTab('report');
       break;
     case 'baseline':
+      if (ev.status === 'submitted') break;
       if (ev.status === 'started') S.baselineStart = ev; else S.baseline = ev;
       roomAdd(baselineLine(ev), animate);
       if (ev.status === 'completed') loadBaseline();

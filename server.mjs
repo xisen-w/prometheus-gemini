@@ -80,7 +80,7 @@ function startRun(body) {
 function stream(req, res, id) {
   const file = path.join(RUNS, id, "events.ndjson");
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive", "x-accel-buffering": "no" });
-  let pos = 0, rest = "", closed = false, done = false;
+  let pos = 0, rest = "", closed = false, done = false, sawDone = false, basePending = false;
   const pump = () => {
     if (closed) return;
     let size = 0;
@@ -96,7 +96,9 @@ function stream(req, res, id) {
     for (const l of lines) {
       if (!l.trim()) continue;
       res.write(`data: ${l}\n\n`);
-      if (l.includes('"t":"done"')) done = true;
+      if (l.includes('"t":"baseline"')) basePending = /"status":"(started|submitted)"/.test(l);
+      if (l.includes('"t":"done"')) sawDone = true;
+      if (sawDone && !basePending) done = true;
     }
   };
   pump();

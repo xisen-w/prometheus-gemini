@@ -147,6 +147,9 @@ async function baselineUnits(md) {
 function summarise(units, judged) {
   const count = (v) => judged.filter((u) => u.verdict === v).length;
   const reached = judged.filter((u) => u.verdict !== "unreachable").length;
+  // strict variant: only the first cited page counts (the swarm usually cites several per claim)
+  const firstReached = judged.filter((u) => u.tried?.[0] && !["unreachable", "error"].includes(u.tried[0].verdict));
+  const firstSupported = firstReached.filter((u) => u.tried[0].verdict === "supported").length;
   const allUrls = new Set(units.flatMap((u) => u.urls));
   return {
     cited_claims: units.length,
@@ -161,6 +164,9 @@ function summarise(units, judged) {
     unreachable: count("unreachable"),
     support_rate: reached ? +(count("supported") / reached).toFixed(3) : null,
     support_or_partial_rate: reached ? +((count("supported") + count("partial")) / reached).toFixed(3) : null,
+    first_url_reached: firstReached.length,
+    first_url_supported: firstSupported,
+    first_url_support_rate: firstReached.length ? +(firstSupported / firstReached.length).toFixed(3) : null,
   };
 }
 
@@ -208,7 +214,7 @@ async function evalRun(id) {
   const result = {
     run: id,
     question: req.question,
-    kind: spec.kind || "main",
+    kind: spec.kind || "–",
     agents: first.seats.filter((s) => ["researcher", "redteam"].includes(s.role)).length,
     judge: JUDGE,
     swarm: {
@@ -249,17 +255,17 @@ function pct(x) { return x == null ? "–" : `${Math.round(x * 100)}%`; }
 function table() {
   const rs = fs.readdirSync(path.join(ROOT, "runs")).map((d) => path.join(ROOT, "runs", d, "eval.json")).filter((f) => fs.existsSync(f)).map((f) => JSON.parse(fs.readFileSync(f, "utf8")));
   const lines = [
-    "| Question | Kind | Agents | Cited claims (swarm / DR) | Citation supported (swarm / DR) | Supported or partial (swarm / DR) | Domains per claim (swarm / DR) | Quotes found verbatim (swarm) | Red-team checks / challenges | Edge case handled (swarm / DR) |",
-    "|---|---|---|---|---|---|---|---|---|---|",
+    "| Question | Kind | Agents | Cited claims (swarm / DR) | Citation supported, any cited page (swarm / DR) | First cited page only (swarm / DR) | Supported or partial (swarm / DR) | Domains per claim (swarm / DR) | Quotes found verbatim (swarm) | Red-team checks / challenges | Edge case handled (swarm / DR) |",
+    "|---|---|---|---|---|---|---|---|---|---|---|",
   ];
-  const agg = { s: { sup: 0, part: 0, reach: 0 }, b: { sup: 0, part: 0, reach: 0 } };
+  const agg = { s: { sup: 0, part: 0, reach: 0, f: 0, fr: 0 }, b: { sup: 0, part: 0, reach: 0, f: 0, fr: 0 } };
   for (const r of rs) {
     const s = r.swarm, b = r.baseline;
-    agg.s.sup += s.supported; agg.s.part += s.partial; agg.s.reach += s.reached;
-    agg.b.sup += b.supported; agg.b.part += b.partial; agg.b.reach += b.reached;
-    lines.push(`| ${r.question.slice(0, 70)}${r.question.length > 70 ? "…" : ""} | ${r.kind} | ${r.agents} | ${s.cited_claims} / ${b.cited_claims} | ${pct(s.support_rate)} (${s.supported}/${s.reached}) / ${pct(b.support_rate)} (${b.supported}/${b.reached}) | ${pct(s.support_or_partial_rate)} / ${pct(b.support_or_partial_rate)} | ${s.mean_domains_per_claim} / ${b.mean_domains_per_claim} | ${pct(s.quote_verbatim?.rate)} (${s.quote_verbatim?.found}/${s.quote_verbatim?.reached}) | ${s.redteam_checks} / ${s.challenges} | ${s.edge_ok == null ? "–" : s.edge_ok ? "yes" : "no"} / ${b.edge_ok == null ? "–" : b.edge_ok ? "yes" : "no"} |`);
+    agg.s.sup += s.supported; agg.s.part += s.partial; agg.s.reach += s.reached; agg.s.f += s.first_url_supported || 0; agg.s.fr += s.first_url_reached || 0;
+    agg.b.sup += b.supported; agg.b.part += b.partial; agg.b.reach += b.reached; agg.b.f += b.first_url_supported || 0; agg.b.fr += b.first_url_reached || 0;
+    lines.push(`| ${r.question.slice(0, 70)}${r.question.length > 70 ? "…" : ""} | ${r.kind} | ${r.agents} | ${s.cited_claims} / ${b.cited_claims} | ${pct(s.support_rate)} (${s.supported}/${s.reached}) / ${pct(b.support_rate)} (${b.supported}/${b.reached}) | ${pct(s.first_url_support_rate)} / ${pct(b.first_url_support_rate)} | ${pct(s.support_or_partial_rate)} / ${pct(b.support_or_partial_rate)} | ${s.mean_domains_per_claim} / ${b.mean_domains_per_claim} | ${pct(s.quote_verbatim?.rate)} (${s.quote_verbatim?.found}/${s.quote_verbatim?.reached}) | ${s.redteam_checks} / ${s.challenges} | ${s.edge_ok == null ? "–" : s.edge_ok ? "yes" : "no"} / ${b.edge_ok == null ? "–" : b.edge_ok ? "yes" : "no"} |`);
   }
-  const tot = `\n**All questions pooled:** citations supported, swarm ${pct(agg.s.reach ? agg.s.sup / agg.s.reach : null)} (${agg.s.sup}/${agg.s.reach}) vs Deep Research ${pct(agg.b.reach ? agg.b.sup / agg.b.reach : null)} (${agg.b.sup}/${agg.b.reach}); supported or partial ${pct(agg.s.reach ? (agg.s.sup + agg.s.part) / agg.s.reach : null)} vs ${pct(agg.b.reach ? (agg.b.sup + agg.b.part) / agg.b.reach : null)}.\n`;
+  const tot = `\n**All questions pooled:** citations supported, swarm ${pct(agg.s.reach ? agg.s.sup / agg.s.reach : null)} (${agg.s.sup}/${agg.s.reach}) vs Deep Research ${pct(agg.b.reach ? agg.b.sup / agg.b.reach : null)} (${agg.b.sup}/${agg.b.reach}); supported or partial ${pct(agg.s.reach ? (agg.s.sup + agg.s.part) / agg.s.reach : null)} vs ${pct(agg.b.reach ? (agg.b.sup + agg.b.part) / agg.b.reach : null)}; first cited page only ${pct(agg.s.fr ? agg.s.f / agg.s.fr : null)} (${agg.s.f}/${agg.s.fr}) vs ${pct(agg.b.fr ? agg.b.f / agg.b.fr : null)} (${agg.b.f}/${agg.b.fr}).\n`;
   fs.mkdirSync(path.join(ROOT, "eval"), { recursive: true });
   const md = `# Results\n\nJudge: ${rs[0]?.judge || JUDGE}. Up to ${PER_SYSTEM} cited claims per system per question, spread evenly through each answer; every cited page re-fetched by the evaluator; unreachable pages excluded from the rates and counted separately in eval.json.\n\n${lines.join("\n")}\n${tot}`;
   fs.writeFileSync(path.join(ROOT, "eval/results.md"), md);

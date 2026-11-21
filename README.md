@@ -24,3 +24,17 @@ MOCK=1 node swarm.mjs --run <id> # simulated agents, no key needed
 Environment: `SWARM_SEAT_MODEL` (default `gemini-4-hydrogen`), `SWARM_LEAD_MODEL` (default `gemini-4-argon`), `SWARM_AGENT` (default `antigravity-preview-09-2026`), `SWARM_BASELINE` (default `deep-research-max-preview-04-2026`).
 
 Files per run in `runs/<id>/`: `events.ndjson` (everything that happened), `ledger.jsonl` (the evidence), `report.md`, `baseline.md`. See `CONTRACT.md`.
+
+## Team sizes: 8 to 128 agents
+
+Pick 8, 16, 32, 64 or 128 agents. About 80% are researchers and 20% red team. From 32 agents up the team is split into branches of about 12 researchers: Gemini 4 Argon first splits the question into branches, then plans each branch's sub-questions in parallel; cross-checks stay inside a branch; each branch gets its own section writer, and a lead writer joins the sections. At 128 agents that is 102 researchers and 26 red-team agents in 9 branches. A limiter (`SWARM_CONCURRENCY`, default 64) and backoff keep many agents within API limits.
+
+## Evaluation (5 Sigma)
+
+**Baseline:** Google's own Deep Research agent (`deep-research-max-preview-04-2026`) answers the same question in the same run.
+
+**What we score** (`node eval.mjs <runId>`): only what can be checked, not how the prose reads. For each system we take the cited claims of its final answer (ours: every sentence with a `[C…]` tag and the ledger sources behind it; Deep Research: claims and their URLs, extracted by Gemini 4 Argon), re-open every cited page ourselves, and ask the same judge (Gemini 4 Argon) whether the page supports the claim. Reported: citations supported (any cited page, and first cited page only), supported-or-partial, unreachable pages, independent domains per claim, quotes found verbatim on re-fetch (swarm only: Deep Research gives no quotes), red-team checks and challenges, and whether edge cases are handled.
+
+**Test set** (`eval/testset.json`): questions we did not tune on, chosen to be messy rather than the happy path: a false premise, a typo-ridden question with three asks, a Chinese-language question, a broad contested health question, and a question that cannot be answered yet (an event on the same day). Each edge case has a written expectation, and the judge grades both answers against it.
+
+Results: `eval/results.md` (generated).
