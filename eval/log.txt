@@ -261,3 +261,63 @@ Judge: gemini-4-argon. Up to 30 cited claims per system per question, spread eve
 
 **All questions pooled:** citations supported, swarm 44% (35/79) vs Deep Research 58% (29/50); supported or partial 96% vs 100%; first cited page only 33% (24/72) vs 41% (19/46).
 
+r_202611212239_4466 swarm {"cited_claims":18,"distinct_urls":18,"distinct_domains":11,"mean_domains_per_claim":2.67,"sampled":18,"reached":18,"supported":12,"partial":6,"unsupported":0,"unreachable":0,"support_rate":0.667,"support_or_partial_rate":1,"together_reached":18,"together_supported":13,"together_unsupported":0,"together_rate":0.722,"first_url_reached":17,"first_url_supported":10,"first_url_support_rate":0.588,"uncited_claims":0,"quote_verbatim":{"checked":40,"reached":37,"found":36,"rate":0.973},"key_claims":39,"redteam_checks":171,"checks_confirmed":171,"challenges":0,"challenges_resolved":0,"contradicting_sources":0,"not_found":0,"searches":127,"pages_opened":179,"tokens":6888529,"minutes":7.5,"edge_ok":true} 
+   baseline {"agent":"deep-research-max-preview-04-2026","cited_claims":61,"distinct_urls":58,"distinct_domains":47,"mean_domains_per_claim":2.2,"sampled":30,"reached":26,"supported":16,"partial":10,"unsupported":0,"unreachable":4,"support_rate":0.615,"support_or_partial_rate":1,"together_reached":26,"together_supported":16,"together_unsupported":0,"together_rate":0.615,"first_url_reached":24,"first_url_supported":10,"first_url_support_rate":0.417,"uncited_claims":12,"redteam_checks":0,"searches":0,"pages_opened":0,"tokens":984281,"minutes":7.4,"edge_ok":true}
+# Results
+
+Judge: gemini-4-argon. Up to 30 cited claims per system per question, spread evenly through each answer; every cited page re-fetched by the evaluator; unreachable pages excluded from the rates and counted separately in eval.json.
+
+| Question | Kind | Agents | Cited claims (swarm / DR) | Citation supported, any cited page (swarm / DR) | First cited page only (swarm / DR) | Supported or partial (swarm / DR) | Domains per claim (swarm / DR) | Quotes found verbatim (swarm) | Red-team checks / challenges | Edge case handled (swarm / DR) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| whats teh current us fed funds rate n when did they last change it?? a… | messy input | 16 | 39 / 61 | 35% (7/20) / 59% (10/17) | 21% / 29% | 95% / 100% | 3.46 / 2.2 | 97% (29/30) | 104 / 6 | yes / yes |
+| 2026年中国新能源汽车出口了多少辆？主要出口到哪些国家？和2025年比怎么样？ | non-English | 16 | 72 / 11 | 32% (6/19) / 36% (4/11) | 24% / 40% | 100% / 100% | 3.92 / 1.55 | 74% (26/35) | 148 / 28 | yes / no |
+| Why did the European Union ban all AI chatbots in 2026, and which comp… | false premise | 16 | 92 / 4 | 60% (12/20) / 50% (2/4) | 38% / 25% | 95% / 100% | 3.35 / 2.5 | 92% (33/36) | 115 / 17 | yes / yes |
+| Which team won first place at the Gemini 4 NYC Hackathon on November 2… | probably unanswerable | 16 | 36 / 39 | 50% (10/20) / 72% (13/18) | 50% / 56% | 95% / 100% | 3.11 / 1.51 | 68% (26/38) | 66 / 22 | yes / yes |
+
+**All questions pooled:** citations supported, swarm 44% (35/79) vs Deep Research 58% (29/50); supported or partial 96% vs 100%; first cited page only 33% (24/72) vs 41% (19/46).
+
+r_202611212239_4466 swarm {"cited_claims":18,"distinct_urls":18,"distinct_domains":11,"mean_domains_per_claim":2.67,"sampled":18,"reached":18,"supported":10,"partial":8,"unsupported":0,"unreachable":0,"support_rate":0.556,"support_or_partial_rate":1,"together_reached":18,"together_supported":14,"together_unsupported":0,"together_rate":0.778,"first_url_reached":17,"first_url_supported":9,"first_url_support_rate":0.529,"uncited_claims":0,"quote_verbatim":{"checked":40,"reached":37,"found":36,"rate":0.973},"key_claims":39,"redteam_checks":171,"checks_confirmed":171,"challenges":0,"challenges_resolved":0,"contradicting_sources":0,"not_found":0,"searches":127,"pages_opened":179,"tokens":6888529,"minutes":7.5,"edge_ok":true} 
+   baseline {"agent":"deep-research-max-preview-04-2026","cited_claims":65,"distinct_urls":58,"distinct_domains":47,"mean_domains_per_claim":2.2,"sampled":30,"reached":29,"supported":16,"partial":13,"unsupported":0,"unreachable":1,"support_rate":0.552,"support_or_partial_rate":1,"together_reached":29,"together_supported":14,"together_unsupported":0,"together_rate":0.483,"first_url_reached":24,"first_url_supported":11,"first_url_support_rate":0.458,"uncited_claims":11,"redteam_checks":0,"searches":0,"pages_opened":0,"tokens":984281,"minutes":7.4,"edge_ok":true}
+# Results
+
+Judge: gemini-4-argon. Up to 30 cited claims per system per question, spread evenly through each answer; every cited page re-fetched by the evaluator; unreachable pages excluded from the rates and counted separately in eval.json.
+
+| Question | Kind | Agents | Cited claims (swarm / DR) | Citation supported, any cited page (swarm / DR) | First cited page only (swarm / DR) | Supported or partial (swarm / DR) | Domains per claim (swarm / DR) | Quotes found verbatim (swarm) | Red-team checks / challenges | Edge case handled (swarm / DR) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| whats teh current us fed funds rate n when did they last change it?? a… | messy input | 16 | 39 / 61 | 35% (7/20) / 59% (10/17) | 21% / 29% | 95% / 100% | 3.46 / 2.2 | 97% (29/30) | 104 / 6 | yes / yes |
+| 2026年中国新能源汽车出口了多少辆？主要出口到哪些国家？和2025年比怎么样？ | non-English | 16 | 72 / 11 | 32% (6/19) / 36% (4/11) | 24% / 40% | 100% / 100% | 3.92 / 1.55 | 74% (26/35) | 148 / 28 | yes / no |
+| Why did the European Union ban all AI chatbots in 2026, and which comp… | false premise | 16 | 92 / 4 | 60% (12/20) / 50% (2/4) | 38% / 25% | 95% / 100% | 3.35 / 2.5 | 92% (33/36) | 115 / 17 | yes / yes |
+| Which team won first place at the Gemini 4 NYC Hackathon on November 2… | probably unanswerable | 16 | 36 / 39 | 50% (10/20) / 72% (13/18) | 50% / 56% | 95% / 100% | 3.11 / 1.51 | 68% (26/38) | 66 / 22 | yes / yes |
+
+**All questions pooled:** citations supported, swarm 44% (35/79) vs Deep Research 58% (29/50); supported or partial 96% vs 100%; first cited page only 33% (24/72) vs 41% (19/46).
+
+r_202611212206_2fca swarm {"cited_claims":151,"distinct_urls":314,"distinct_domains":136,"mean_domains_per_claim":3.38,"sampled":30,"reached":29,"supported":9,"partial":20,"unsupported":0,"unreachable":1,"support_rate":0.31,"support_or_partial_rate":1,"together_reached":29,"together_supported":9,"together_unsupported":1,"together_rate":0.31,"first_url_reached":22,"first_url_supported":7,"first_url_support_rate":0.318,"uncited_claims":0,"quote_verbatim":{"checked":40,"reached":32,"found":24,"rate":0.75},"key_claims":553,"redteam_checks":1290,"checks_confirmed":1144,"challenges":312,"challenges_resolved":313,"contradicting_sources":374,"not_found":94,"searches":2984,"pages_opened":4148,"tokens":331935032,"minutes":43.9,"edge_ok":null} 
+   baseline {"agent":"deep-research-max-preview-04-2026","cited_claims":4,"distinct_urls":5,"distinct_domains":4,"mean_domains_per_claim":1.5,"sampled":4,"reached":3,"supported":2,"partial":1,"unsupported":0,"unreachable":1,"support_rate":0.667,"support_or_partial_rate":1,"together_reached":3,"together_supported":3,"together_unsupported":0,"together_rate":1,"first_url_reached":3,"first_url_supported":2,"first_url_support_rate":0.667,"uncited_claims":19,"redteam_checks":0,"searches":0,"pages_opened":0,"tokens":1780369,"minutes":14.4,"edge_ok":null}
+# Results
+
+Judge: gemini-4-argon. Up to 30 cited claims per system per question, spread evenly through each answer; every cited page re-fetched by the evaluator; unreachable pages excluded from the rates and counted separately in eval.json.
+
+| Question | Kind | Agents | Cited claims (swarm / DR) | Citation supported, any cited page (swarm / DR) | First cited page only (swarm / DR) | Supported or partial (swarm / DR) | Domains per claim (swarm / DR) | Quotes found verbatim (swarm) | Red-team checks / challenges | Edge case handled (swarm / DR) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| whats teh current us fed funds rate n when did they last change it?? a… | messy input | 16 | 39 / 61 | 35% (7/20) / 59% (10/17) | 21% / 29% | 95% / 100% | 3.46 / 2.2 | 97% (29/30) | 104 / 6 | yes / yes |
+| 2026年中国新能源汽车出口了多少辆？主要出口到哪些国家？和2025年比怎么样？ | non-English | 16 | 72 / 11 | 32% (6/19) / 36% (4/11) | 24% / 40% | 100% / 100% | 3.92 / 1.55 | 74% (26/35) | 148 / 28 | yes / no |
+| Why did the European Union ban all AI chatbots in 2026, and which comp… | false premise | 16 | 92 / 4 | 60% (12/20) / 50% (2/4) | 38% / 25% | 95% / 100% | 3.35 / 2.5 | 92% (33/36) | 115 / 17 | yes / yes |
+| Which team won first place at the Gemini 4 NYC Hackathon on November 2… | probably unanswerable | 16 | 36 / 39 | 50% (10/20) / 72% (13/18) | 50% / 56% | 95% / 100% | 3.11 / 1.51 | 68% (26/38) | 66 / 22 | yes / yes |
+
+**All questions pooled:** citations supported, swarm 44% (35/79) vs Deep Research 58% (29/50); supported or partial 96% vs 100%; first cited page only 33% (24/72) vs 41% (19/46).
+
+r_202611212206_2fca swarm {"cited_claims":227,"distinct_urls":380,"distinct_domains":163,"mean_domains_per_claim":3.15,"sampled":30,"reached":29,"supported":5,"partial":22,"unsupported":2,"unreachable":1,"support_rate":0.172,"support_or_partial_rate":0.931,"together_reached":29,"together_supported":11,"together_unsupported":2,"together_rate":0.379,"first_url_reached":28,"first_url_supported":4,"first_url_support_rate":0.143,"uncited_claims":1,"quote_verbatim":{"checked":40,"reached":32,"found":24,"rate":0.75},"key_claims":553,"redteam_checks":1290,"checks_confirmed":1144,"challenges":312,"challenges_resolved":313,"contradicting_sources":374,"not_found":94,"searches":2984,"pages_opened":4148,"tokens":331935032,"minutes":43.9,"edge_ok":null} 
+   baseline {"agent":"deep-research-max-preview-04-2026","cited_claims":4,"distinct_urls":5,"distinct_domains":4,"mean_domains_per_claim":1.5,"sampled":4,"reached":3,"supported":2,"partial":1,"unsupported":0,"unreachable":1,"support_rate":0.667,"support_or_partial_rate":1,"together_reached":3,"together_supported":3,"together_unsupported":0,"together_rate":1,"first_url_reached":3,"first_url_supported":2,"first_url_support_rate":0.667,"uncited_claims":19,"redteam_checks":0,"searches":0,"pages_opened":0,"tokens":1780369,"minutes":14.4,"edge_ok":null}
+# Results
+
+Judge: gemini-4-argon. Up to 30 cited claims per system per question, spread evenly through each answer; every cited page re-fetched by the evaluator; unreachable pages excluded from the rates and counted separately in eval.json.
+
+| Question | Kind | Agents | Cited claims (swarm / DR) | Citation supported, any cited page (swarm / DR) | First cited page only (swarm / DR) | Supported or partial (swarm / DR) | Domains per claim (swarm / DR) | Quotes found verbatim (swarm) | Red-team checks / challenges | Edge case handled (swarm / DR) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| whats teh current us fed funds rate n when did they last change it?? a… | messy input | 16 | 39 / 61 | 35% (7/20) / 59% (10/17) | 21% / 29% | 95% / 100% | 3.46 / 2.2 | 97% (29/30) | 104 / 6 | yes / yes |
+| 2026年中国新能源汽车出口了多少辆？主要出口到哪些国家？和2025年比怎么样？ | non-English | 16 | 72 / 11 | 32% (6/19) / 36% (4/11) | 24% / 40% | 100% / 100% | 3.92 / 1.55 | 74% (26/35) | 148 / 28 | yes / no |
+| Why did the European Union ban all AI chatbots in 2026, and which comp… | false premise | 16 | 92 / 4 | 60% (12/20) / 50% (2/4) | 38% / 25% | 95% / 100% | 3.35 / 2.5 | 92% (33/36) | 115 / 17 | yes / yes |
+| Which team won first place at the Gemini 4 NYC Hackathon on November 2… | probably unanswerable | 16 | 36 / 39 | 50% (10/20) / 72% (13/18) | 50% / 56% | 95% / 100% | 3.11 / 1.51 | 68% (26/38) | 66 / 22 | yes / yes |
+
+**All questions pooled:** citations supported, swarm 44% (35/79) vs Deep Research 58% (29/50); supported or partial 96% vs 100%; first cited page only 33% (24/72) vs 41% (19/46).
+

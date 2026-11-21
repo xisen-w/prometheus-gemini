@@ -142,7 +142,7 @@ async function waitFor(it, timeoutMs) {
 }
 
 // at most SWARM_CONCURRENCY interactions run at once; the rest queue
-const LIMIT = Number(process.env.SWARM_CONCURRENCY || 64);
+let LIMIT = Number(process.env.SWARM_CONCURRENCY || 64);
 let active = 0;
 const waiting = [];
 async function slot(fn) {
@@ -152,12 +152,19 @@ async function slot(fn) {
 }
 const transient = (e) => /\b429\b|\b5\d\d\b|quota|rate|unavailable|overloaded|resource.?exhausted|ECONNRESET|ETIMEDOUT|fetch failed/i.test(String(e?.message || e));
 const backoff = (i) => sleep(Math.min(60_000, 4000 * 2 ** i) * (0.6 + Math.random() * 0.8));
+const rateLimited = (e) => /\b429\b|rate limit|resource.?exhausted|quota/i.test(String(e?.message || e));
+let rateWaits = 0;
+async function rateWait(e) {
+  rateWaits++;
+  const m = String(e?.message || e).match(/retry in (\d+)s/i);
+  await sleep(((m ? Number(m[1]) : 20) + Math.random() * 30) * 1000);
+}
 
 let agentId = AGENT_ID;
 let useAgentConfig = true;
 async function createWithFallbacks(req) {
   const tries = [];
-  const attempt = async () => gem().interactions.create({ ...req, agent: agentId, ...(useAgentConfig ? {} : { agent_config: undefined }) });
+  const attempt = async () => { const { fell_back, ...body } = req; return gem().interactions.create({ ...body, agent: agentId, ...(useAgentConfig ? {} : { agent_config: undefined }) }); };
   for (let i = 0; i < 3; i++) {
     try {
       return await attempt();
@@ -165,6 +172,7 @@ async function createWithFallbacks(req) {
       const msg = String(e?.message || e);
       tries.push(msg.slice(0, 200));
       if (!/\b4\d\d\b|invalid|not found|unsupported/i.test(msg) || /\b429\b|quota|rate/i.test(msg)) throw e;
+      if (req.agent_config?.model && req.agent_config.model !== "gemini-4-hydrogen" && /model|agent_config|config/i.test(msg)) { req.agent_config = { ...req.agent_config, model: "gemini-4-hydrogen" }; req.fell_back = true; continue; }
       if (useAgentConfig && /model|agent_config|config/i.test(msg)) { useAgentConfig = false; continue; }
       if (agentId !== AGENT_FALLBACK) { agentId = AGENT_FALLBACK; continue; }
       if (useAgentConfig) { useAgentConfig = false; continue; }
@@ -192,6 +200,7 @@ async function agentTurnNow(seat, input, system, timeoutMs) {
   for (let i = 0; ; i++) {
     try { it = await createWithFallbacks(req); break; }
     catch (e) {
+      if (rateLimited(e) && i < 60) { await rateWait(e); continue; }
       if (i < 6 && transient(e)) { await backoff(i); continue; }
       throw e;
     }
@@ -218,6 +227,7 @@ async function modelCallNow(input, system, model, timeoutMs) {
         it = await gem().interactions.create({ model, input, system_instruction: system });
         break;
       }
+      if (rateLimited(e) && i < 60) { await rateWait(e); continue; }
       if (i < 6 && transient(e)) { await backoff(i); continue; }
       throw e;
     }
@@ -304,6 +314,7 @@ One JSON object per line. Row types: question {id,text,parent}, claim {id,text,k
 ${ids}
 Rules:
 - quote is copied character-for-character from the page you opened. The system re-opens pages and searches for the quote; a quote it cannot find fails the whole submission.
+- One fact per claim. A claim states only what its quoted sentence itself says: one number, one date, one event. Do not pack several facts, a list, or your own summary into one claim; split them into separate claims, each with its own quote. An independent checker re-opens the page and fails any claim that says more than the page.
 - A key claim (one the answer rests on) needs two independent publishers. If you can only find one, set "single_source": true.
 - stance is about the claim on that row: "contradicts" if the source disagrees with that claim. Actively look for the strongest contradicting evidence.
 - Searched and found nothing? Write a not_found row with what you searched.
@@ -985,8 +996,8 @@ async function freeRun(run, R, X) {
   run.branches = [{ id: "B1", title: "", scope: "" }];
   const N = R + X;
   run.seats = [
-    ...Array.from({ length: R }, (_, k) => ({ id: `R${k + 1}`, role: "researcher", model: SEAT_MODEL, arrive: Math.floor(k / 8) * (N > 20 ? 25_000 : 8_000) })),
-    ...Array.from({ length: X }, (_, k) => ({ id: `X${k + 1}`, role: "redteam", model: SEAT_MODEL, arrive: 60_000 + k * 2_000 })),
+    ...Array.from({ length: R }, (_, k) => ({ id: `R${k + 1}`, role: "researcher", model: seatModel(run, k), arrive: Math.floor(k / 8) * (N > 20 ? 25_000 : 8_000) })),
+    ...Array.from({ length: X }, (_, k) => ({ id: `X${k + 1}`, role: "redteam", model: seatModel(run, R + k), arrive: 60_000 + k * 2_000 })),
     { id: "W", role: "writer", model: LEAD_MODEL },
     { id: "J", role: "judge", model: LEAD_MODEL },
   ];
@@ -1026,11 +1037,14 @@ async function freeRun(run, R, X) {
   run.emit({ t: "done", status, totals: { ...run.totals, minutes: Math.round((Date.now() - run.started) / 6000) / 10 } });
 }
 
+const seatModel = (run, k) => (run.req.models?.length ? run.req.models[k % run.req.models.length] : SEAT_MODEL);
+
 // ---------------------------------------------------------------- main
 async function main() {
   const i = process.argv.indexOf("--run");
   if (i < 0) throw new Error("usage: node swarm.mjs --run <runId>");
   const run = new Run(process.argv[i + 1]);
+  if (run.req.concurrency) LIMIT = Number(run.req.concurrency);
   if (run.req.seat_model) SEAT_MODEL = run.req.seat_model; // per-run choice: hydrogen, neon, carbon
   const from = process.argv.includes("--from") ? process.argv[process.argv.indexOf("--from") + 1] : null;
   if (from === "write") return resumeAtWrite(run);
@@ -1039,7 +1053,7 @@ async function main() {
   // team size: `agents` = researchers + red team (8..128); older requests give the two counts
   let R, X;
   if (run.req.agents) {
-    const N = Math.max(4, Math.min(128, run.req.agents));
+    const N = Math.max(4, Math.min(1024, run.req.agents));
     X = Math.max(1, Math.round(N / 5));
     R = N - X;
   } else {
@@ -1051,8 +1065,8 @@ async function main() {
   run.branches = Array.from({ length: B }, (_, i) => ({ id: `B${i + 1}`, title: "", scope: "" }));
   run.seats = [
     { id: "P", role: "planner", model: LEAD_MODEL },
-    ...Array.from({ length: R }, (_, k) => ({ id: `R${k + 1}`, role: "researcher", model: SEAT_MODEL, branch: `B${Math.min(B, Math.floor((k * B) / R) + 1)}` })),
-    ...Array.from({ length: X }, (_, k) => ({ id: `X${k + 1}`, role: "redteam", model: SEAT_MODEL, branch: `B${(k % B) + 1}` })),
+    ...Array.from({ length: R }, (_, k) => ({ id: `R${k + 1}`, role: "researcher", model: seatModel(run, k), branch: `B${Math.min(B, Math.floor((k * B) / R) + 1)}` })),
+    ...Array.from({ length: X }, (_, k) => ({ id: `X${k + 1}`, role: "redteam", model: seatModel(run, R + k), branch: `B${(k % B) + 1}` })),
     { id: "W", role: "writer", model: LEAD_MODEL },
     { id: "J", role: "judge", model: LEAD_MODEL },
   ];
@@ -1063,7 +1077,7 @@ async function main() {
     await plan(run);
     await Promise.all(run.branches.map((b) => branchPipeline(run, b)));
     let g = { pass: false, problems: [] };
-    for (let round = 1; round <= 4; round++) {
+    for (let round = 1; round <= (run.req.max_rounds || 4); round++) {
       if (round > 1) {
         await redteam(run, round, g.problems);
         await fix(run, round, g.problems);

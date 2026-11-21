@@ -63,11 +63,14 @@ function startRun(body) {
   fs.mkdirSync(dir, { recursive: true });
   const req = {
     question: q.slice(0, 4000),
-    ...(body.agents ? { agents: Math.max(4, Math.min(128, Number(body.agents) || 16)) } : {}),
+    ...(body.agents ? { agents: Math.max(4, Math.min(1024, Number(body.agents) || 16)) } : {}),
     researchers: Math.max(2, Math.min(8, Number(body.researchers) || 6)),
     redteam: Math.max(1, Math.min(3, Number(body.redteam) || 2)),
     minutes: Math.max(5, Math.min(120, Number(body.minutes) || 30)),
     baseline: body.baseline !== false,
+    ...(Array.isArray(body.models) && body.models.length <= 32 && body.models.every((m) => /^gemini-[a-z0-9.-]{1,40}$/.test(m)) ? { models: body.models } : {}),
+    ...(Number(body.max_rounds) >= 1 ? { max_rounds: Math.min(4, Number(body.max_rounds)) } : {}),
+    ...(Number(body.concurrency) >= 1 ? { concurrency: Math.min(1024, Number(body.concurrency)) } : {}),
     ...(/^gemini-[a-z0-9.-]{1,40}$/.test(body.seat_model || "") ? { seat_model: body.seat_model } : {}),
     ...(body.mode === "free" ? { mode: "free" } : {}),
     ...(/^[A-Za-z0-9_-]{1,64}$/.test(body.baseline_from || "") ? { baseline_from: body.baseline_from } : {}),

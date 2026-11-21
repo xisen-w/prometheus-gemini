@@ -174,11 +174,11 @@ async function showAsk() {
       <div class="opts" id="optsgrid" hidden>
         <div class="grid">
           <fieldset class="agents"><legend class="lab"><span>Agents</span><span class="v" data-v="split">13 researchers · 3 red team</span></legend>
-            <div class="seg">${[8, 16, 32, 64, 128].map((n) => `<label><input type="radio" name="agents" value="${n}"${n === 16 ? ' checked' : ''}><span>${n}</span></label>`).join('')}</div>
+            <div class="seg">${[8, 16, 32, 64, 128, 1024].map((n) => `<label><input type="radio" name="agents" value="${n}"${n === 16 ? ' checked' : ''}><span>${n}</span></label>`).join('')}</div>
           </fieldset>
           ${range('minutes', 'Minutes', 10, 120, 5, 30)}
           <fieldset class="agents"><legend class="lab"><span>Agent model</span><span class="v">Gemini 4</span></legend>
-            <div class="seg">${[['gemini-4-hydrogen', 'Hydrogen'], ['gemini-4-neon', 'Neon'], ['gemini-4-carbon', 'Carbon']].map(([v, l], i) => `<label><input type="radio" name="seat_model" value="${v}"${i === 0 ? ' checked' : ''}><span>${l}</span></label>`).join('')}</div>
+            <div class="seg">${[['gemini-4-hydrogen', 'Hydrogen'], ['gemini-4-neon', 'Neon'], ['gemini-4-carbon', 'Carbon'], ['mix', 'All']].map(([v, l], i) => `<label><input type="radio" name="seat_model" value="${v}"${i === 0 ? ' checked' : ''}><span>${l}</span></label>`).join('')}</div>
           </fieldset>
           <fieldset class="agents"><legend class="lab"><span>Coordination</span><span class="v" data-v="modehint">code assigns the work</span></legend>
             <div class="seg"><label><input type="radio" name="mode" value="orchestrated" checked><span>Orchestrated</span></label><label><input type="radio" name="mode" value="free"><span>No orchestrator</span></label></div>
@@ -209,7 +209,7 @@ async function showAsk() {
   f.addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = $('button[type=submit]', f);
-    const body = { question: f.question.value.trim(), agents: +f.agents.value, minutes: +f.minutes.value, baseline: f.baseline.checked, mode: f.mode.value, seat_model: f.seat_model.value };
+    const body = { question: f.question.value.trim(), agents: +f.agents.value, minutes: +f.minutes.value, baseline: f.baseline.checked, mode: f.mode.value, ...(f.seat_model.value === 'mix' ? { models: ['gemini-4-hydrogen', 'gemini-4-hydrogen', 'gemini-4-neon', 'gemini-4-hydrogen', 'gemini-4-hydrogen', 'gemini-4-neon', 'gemini-4-carbon', 'gemini-4-argon'] } : { seat_model: f.seat_model.value }), ...(+f.agents.value > 128 ? { max_rounds: 1, concurrency: 256 } : {}) };
     if (body.question.length < 8) { $('#err').textContent = 'A little longer, please.'; return; }
     btn.disabled = true; btn.textContent = 'Starting';
     try {

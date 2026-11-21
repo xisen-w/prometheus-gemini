@@ -309,8 +309,23 @@ function table() {
   return md;
 }
 
+// diagnostic: score the ledger's key claims themselves (claim text vs its own sources), before any writing
+async function ledgerScore(id) {
+  const L = readLedger(path.join(ROOT, "runs", id));
+  const units = L.claims.filter((c) => c.key).map((c) => ({ claim: c.text, tags: [c.id], urls: [...new Set(L.sources.filter((x) => x.claim === c.id && x.stance !== "contradicts").map((x) => x.url))] })).filter((u) => u.urls.length);
+  const judged = await pool(spread(units, PER_SYSTEM), 6, judgeUnit);
+  const r = { run: id, ...summarise(units, judged) };
+  fs.writeFileSync(path.join(ROOT, "runs", id, "eval.ledger.json"), JSON.stringify({ ...r, details: judged }, null, 2));
+  return r;
+}
+
 const args = process.argv.slice(2);
-if (args[0] === "--table") console.log(table());
+if (args[0] === "--ledger") {
+  for (const id of args.slice(1)) {
+    const r = await ledgerScore(id);
+    console.log(id, "ledger key claims: together", `${r.together_supported}/${r.together_reached}`, r.together_rate, "| single page", `${r.supported}/${r.reached}`, r.support_rate, "| unsupported", r.together_unsupported);
+  }
+} else if (args[0] === "--table") console.log(table());
 else {
   for (const id of args) {
     try {
