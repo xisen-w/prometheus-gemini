@@ -429,7 +429,7 @@ function updateHeader() {
   const lastGate = S.gates[S.gates.length - 1];
   const resolved = S.challenges.size - d.open.length;
   const vals = {
-    agents: S.seats.size, searches: d.searches, pages: d.uniquePages, sources: d.keptSources.length, publishers: d.publishers.size,
+    agents: [...S.seats.values()].filter((x) => x.role === 'researcher' || x.role === 'redteam').length || S.seats.size, searches: d.searches, pages: d.uniquePages, sources: d.keptSources.length, publishers: d.publishers.size,
     claims: d.keyClaims.length, confirmed: d.confirmed, challenges: S.challenges.size, gate: S.gates.length, tokens: d.tokens,
   };
   const subs = {
