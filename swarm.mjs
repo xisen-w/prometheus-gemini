@@ -8,7 +8,7 @@ import os from "node:os";
 const ROOT = path.dirname(new URL(import.meta.url).pathname);
 const AGENT_ID = process.env.SWARM_AGENT || "antigravity-preview-09-2026";
 const AGENT_FALLBACK = "antigravity-preview-05-2026";
-const SEAT_MODEL = process.env.SWARM_SEAT_MODEL || "gemini-4-hydrogen";
+let SEAT_MODEL = process.env.SWARM_SEAT_MODEL || "gemini-4-hydrogen";
 const LEAD_MODEL = process.env.SWARM_LEAD_MODEL || "gemini-4-argon";
 const BASELINE_AGENT = process.env.SWARM_BASELINE || "deep-research-max-preview-04-2026";
 const MOCK = process.env.MOCK === "1";
@@ -1031,6 +1031,7 @@ async function main() {
   const i = process.argv.indexOf("--run");
   if (i < 0) throw new Error("usage: node swarm.mjs --run <runId>");
   const run = new Run(process.argv[i + 1]);
+  if (run.req.seat_model) SEAT_MODEL = run.req.seat_model; // per-run choice: hydrogen, neon, carbon
   const from = process.argv.includes("--from") ? process.argv[process.argv.indexOf("--from") + 1] : null;
   if (from === "write") return resumeAtWrite(run);
   if (from === "baseline") { run.req.baseline = true; return baseline(run); }
