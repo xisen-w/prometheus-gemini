@@ -114,14 +114,16 @@ function derive() {
   const checks = [...S.checks.values()];
   const open = [...S.challenges.values()].filter((c) => !S.resolutions.has(c.id));
   let searches = 0, urls = 0, tokens = 0;
-  for (const t of S.turns) { searches += (t.searches || []).length; urls += (t.urls || []).length; tokens += t.tokens || 0; }
+  const uniquePages = new Set();
+  for (const t of S.turns) { searches += (t.searches || []).length; urls += (t.urls || []).length; tokens += t.tokens || 0; for (const u of t.urls || []) uniquePages.add(u); }
+  const sourcePages = new Set(keptSources.map((s) => s.url));
   const answersByClaim = new Map();
   for (const a of S.answers.values()) for (const c of a.claims || []) { if (!answersByClaim.has(c)) answersByClaim.set(c, []); answersByClaim.get(c).push(a); }
   D = {
     srcByClaim, checksBySrc, chalByClaim, answersByClaim, keptClaims, keptSources, publishers, checks, open,
     keyClaims: keptClaims.filter((c) => c.key),
     confirmed: checks.filter((c) => c.result === 'confirmed').length,
-    searches, urls, tokens,
+    searches, urls, tokens, uniquePages: uniquePages.size, sourcePages: sourcePages.size,
   };
   return D;
 }
@@ -248,7 +250,7 @@ const TABS = [
   ['compare', 'vs Google Deep Research', 'vs Google'],
 ];
 const TALLY = [
-  ['agents', 'Agents'], ['searches', 'Searches'], ['pages', 'Pages opened', 'Pages'], ['sources', 'Sources'], ['publishers', 'Publishers'],
+  ['agents', 'Agents'], ['searches', 'Searches'], ['pages', 'Unique pages', 'Pages'], ['sources', 'Sources'], ['publishers', 'Publishers'],
   ['claims', 'Key claims'], ['confirmed', 'Confirmed'], ['challenges', 'Challenges'], ['gate', 'Gate'], ['tokens', 'Tokens'],
 ];
 
@@ -408,10 +410,12 @@ function updateHeader() {
   const lastGate = S.gates[S.gates.length - 1];
   const resolved = S.challenges.size - d.open.length;
   const vals = {
-    agents: S.seats.size, searches: d.searches, pages: d.urls, sources: d.keptSources.length, publishers: d.publishers.size,
+    agents: S.seats.size, searches: d.searches, pages: d.uniquePages, sources: d.keptSources.length, publishers: d.publishers.size,
     claims: d.keyClaims.length, confirmed: d.confirmed, challenges: S.challenges.size, gate: S.gates.length, tokens: d.tokens,
   };
   const subs = {
+    pages: d.urls > d.uniquePages ? `${fmtNum(d.urls)} opens` : '',
+    sources: d.sourcePages && d.sourcePages < d.keptSources.length ? `on ${fmtNum(d.sourcePages)} pages` : '',
     claims: d.keptClaims.length > d.keyClaims.length ? `of ${d.keptClaims.length}` : '',
     confirmed: d.checks.length ? `of ${d.checks.length} checks` : '',
     challenges: S.challenges.size ? (d.open.length ? `<span class="warn">${d.open.length} open</span> · ${resolved} resolved` : `${resolved} resolved`) : '',
