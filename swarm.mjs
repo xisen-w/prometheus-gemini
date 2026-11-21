@@ -811,6 +811,7 @@ async function main() {
   const from = process.argv.includes("--from") ? process.argv[process.argv.indexOf("--from") + 1] : null;
   if (from === "write") return resumeAtWrite(run);
   if (from === "baseline") { run.req.baseline = true; return baseline(run); }
+  if (from === "verify") return verifyOnly(run);
   // team size: `agents` = researchers + red team (8..128); older requests give the two counts
   let R, X;
   if (run.req.agents) {
@@ -846,12 +847,14 @@ async function main() {
       if (g.pass || run.minutesLeft() < 6) break;
     }
     let report = await write(run);
+    if (report) report = await verifyReport(run, report);
     for (let attempt = 1; report && attempt <= 2; attempt++) {
       const j = await judge(run, attempt, report);
       if (j.pass) { status = g.pass ? "passed" : "ended"; break; }
       if (run.minutesLeft() < 3) break;
       await fix(run, 10 + attempt, j.notes.split("\n"));
       report = await write(run, j.notes);
+      if (report) report = await verifyReport(run, report);
     }
   } catch (e) {
     run.say("system", `Run error: ${String(e.message || e).slice(0, 300)}`);
@@ -860,6 +863,96 @@ async function main() {
   await Promise.race([base, sleep(Math.max(0, run.deadline + 10 * 60_000 - Date.now()))]);
   run.emit({ t: "phase", name: "done", round: 1 });
   run.emit({ t: "done", status, totals: { ...run.totals, minutes: Math.round((Date.now() - run.started) / 6000) / 10 } });
+}
+
+// ---------------------------------------------------------------- citation check after writing
+// The first evaluation showed the research was sound (88% of quotes found verbatim) but the writer
+// attached details to the wrong claim ids. Every sentence (or table row) that carries claim tags is now
+// checked against the ledger text and quotes behind exactly those tags; anything the tagged evidence does
+// not state is rewritten from that evidence only, or removed.
+function citedUnits(report) {
+  const units = [];
+  for (const line of report.split("\n")) {
+    if (!tagsIn(line).length) continue;
+    if (line.trim().startsWith("|")) { units.push(line); continue; }
+    for (const s of line.split(/(?<=[.!?。！？])\s+/)) if (tagsIn(s).length) units.push(s);
+  }
+  return [...new Set(units)];
+}
+
+function evidenceFor(run, ids) {
+  const v = run.view();
+  return ids
+    .map((id) => {
+      const c = v.claims.get(id);
+      if (!c) return `${id}: (not in the ledger)`;
+      const q = v.sourcesOf(id).filter((x) => x.stance !== "contradicts").slice(0, 3).map((x) => `"${x.quote}" (${x.publisher})`).join(" ");
+      return `${id}: ${c.text}${q ? ` | quotes: ${q}` : ""}`;
+    })
+    .join("\n");
+}
+
+async function verifyReport(run, report) {
+  const units = citedUnits(report);
+  if (!units.length) return report;
+  run.emit({ t: "turn", seat: "W", phase: "verify", status: "started" });
+  const t0 = Date.now();
+  const sys = `You check citations in a research report. Each unit is a sentence or a Markdown table row, followed by the evidence behind the claim ids it cites (the ledger claim text and exact quotes from the sources). A unit is OK only if every specific fact in it (numbers, dates, names, rankings, comparisons) is stated by the evidence of the ids it cites. If not, rewrite the unit so it says only what that evidence supports, keeping its claim tags, language, Markdown and (for a table row) the same number of cells (write "—" in a cell the evidence does not support); if nothing useful remains, return an empty string. Return ONLY JSON {"units":[{"i":0,"ok":true},{"i":1,"ok":false,"why":"…","fixed":"…"}]}.`;
+  const batches = [];
+  for (let i = 0; i < units.length; i += 15) batches.push(units.slice(i, i + 15).map((u, k) => ({ i: i + k, u })));
+  let flagged = 0, rewritten = 0, removed = 0;
+  const fixes = new Map();
+  await Promise.all(
+    batches.map(async (batch) => {
+      const input = batch.map(({ i, u }) => `UNIT ${i}:\n${u}\nEVIDENCE:\n${evidenceFor(run, tagsIn(u))}`).join("\n\n");
+      try {
+        const res = await modelCall(input, sys);
+        run.totals.tokens += res.tokens;
+        const j = JSON.parse((res.text.match(/\{[\s\S]*\}/) || ["{}"])[0]);
+        for (const r of j.units || []) if (r && r.ok === false && typeof r.fixed === "string" && units[r.i] != null) fixes.set(r.i, r.fixed.trim());
+      } catch {}
+    }),
+  );
+  let out = report;
+  for (const [i, fixed] of fixes) {
+    flagged++;
+    if (fixed) rewritten++; else removed++;
+    out = out.split(units[i]).join(fixed);
+  }
+  out = out.replace(/\n{3,}/g, "\n\n");
+  run.emit({ t: "turn", seat: "W", phase: "verify", status: "completed", searches: [], urls: [], tokens: 0, ms: Date.now() - t0, error: null });
+  run.emit({ t: "verify", checked: units.length, flagged, rewritten, removed });
+  run.say("W", `Checked ${units.length} cited sentences against the quotes behind their tags: ${flagged} said more than their evidence (${rewritten} rewritten, ${removed} removed).`);
+  fs.writeFileSync(path.join(run.dir, "report.md"), out);
+  run.emit({ t: "report" });
+  return out;
+}
+
+// load a finished or interrupted run's state from its files
+function loadState(run) {
+  const evs = fs.readFileSync(path.join(run.dir, "events.ndjson"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const first = evs.find((e) => e.t === "run");
+  run.started = Date.parse(first.started_at);
+  run.deadline = Date.now() + 15 * 60_000;
+  run.seats = first.seats;
+  const B = first.branches || 1;
+  run.branches = Array.from({ length: B }, (_, i) => ({ id: `B${i + 1}`, title: "", scope: "" }));
+  run.rows = fs.readFileSync(path.join(run.dir, "ledger.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  for (const r of run.rows) if (r.type === "question" && /^B\d+$/.test(r.id)) { const b = run.branches.find((x) => x.id === r.id); if (b) { const [t, ...rest] = r.text.split(": "); b.title = t; b.scope = rest.join(": "); } }
+  for (const e of evs) {
+    if (e.t === "msg") run.room.push({ seat: e.seat, text: e.text, at: e.at });
+    if (e.t === "turn" && e.status === "completed") { run.totals.tokens += e.tokens || 0; run.totals.searches += (e.searches || []).length; run.totals.urls_opened += (e.urls || []).length; run.totals.turns += 1; }
+  }
+  return evs;
+}
+
+// re-check an existing report's citations (keeps the original as report.v1.md)
+async function verifyOnly(run) {
+  loadState(run);
+  const f = path.join(run.dir, "report.md");
+  const v1 = path.join(run.dir, "report.v1.md");
+  if (!fs.existsSync(v1)) fs.copyFileSync(f, v1);
+  await verifyReport(run, fs.readFileSync(v1, "utf8"));
 }
 
 // finish a run whose research already passed the gate (e.g. the process was killed while writing)

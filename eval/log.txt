@@ -1,1 +1,14 @@
 == 22:15Z evaluating r_202611212155_840c
+r_202611212155_840c swarm {"cited_claims":102,"distinct_urls":73,"distinct_domains":40,"mean_domains_per_claim":5.07,"sampled":20,"reached":20,"supported":7,"partial":10,"unsupported":3,"unreachable":0,"support_rate":0.35,"support_or_partial_rate":0.85,"first_url_reached":18,"first_url_supported":2,"first_url_support_rate":0.111,"quote_verbatim":{"checked":40,"reached":32,"found":28,"rate":0.875},"key_claims":36,"redteam_checks":98,"checks_confirmed":98,"challenges":28,"challenges_resolved":28,"contradicting_sources":13,"not_found":0,"searches":126,"pages_opened":207,"tokens":12136226,"minutes":11.7,"edge_ok":null} 
+   baseline {"agent":"deep-research-max-preview-04-2026","cited_claims":109,"distinct_urls":92,"distinct_domains":1,"mean_domains_per_claim":1,"sampled":20,"reached":20,"supported":12,"partial":8,"unsupported":0,"unreachable":0,"support_rate":0.6,"support_or_partial_rate":1,"first_url_reached":18,"first_url_supported":7,"first_url_support_rate":0.389,"uncited_claims":15,"redteam_checks":0,"searches":0,"pages_opened":0,"tokens":1254306,"minutes":8.5,"edge_ok":null}
+# Results
+
+Judge: gemini-4-argon. Up to 20 cited claims per system per question, spread evenly through each answer; every cited page re-fetched by the evaluator; unreachable pages excluded from the rates and counted separately in eval.json.
+
+| Question | Kind | Agents | Cited claims (swarm / DR) | Citation supported, any cited page (swarm / DR) | First cited page only (swarm / DR) | Supported or partial (swarm / DR) | Domains per claim (swarm / DR) | Quotes found verbatim (swarm) | Red-team checks / challenges | Edge case handled (swarm / DR) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| What are the Gemini 4 models (Argon, Carbon, Neon, Hydrogen) that Goog… | baseline-run | 8 | 102 / 109 | 35% (7/20) / 60% (12/20) | 11% / 39% | 85% / 100% | 5.07 / 1 | 88% (28/32) | 98 / 28 | – / – |
+
+**All questions pooled:** citations supported, swarm 35% (7/20) vs Deep Research 60% (12/20); supported or partial 85% vs 100%; first cited page only 11% (2/18) vs 39% (7/18).
+
+== 22:22Z evaluating r_202611212206_1aa3

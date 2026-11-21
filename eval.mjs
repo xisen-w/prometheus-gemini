@@ -52,6 +52,7 @@ const strip = (html) =>
 const norm = (s) => strip(String(s || "")).replace(/[\u2018\u2019\u201B]/g, "'").replace(/[\u201C\u201D]/g, '"').replace(/[\u2013\u2014]/g, "-").toLowerCase();
 
 const pageCache = new Map();
+const finalOf = new Map();
 async function page(url) {
   if (pageCache.has(url)) return pageCache.get(url);
   const p = (async () => {
@@ -60,6 +61,7 @@ async function page(url) {
       const t = setTimeout(() => ctl.abort(), 20000);
       const r = await fetch(url, { signal: ctl.signal, redirect: "follow", headers: { "user-agent": "Mozilla/5.0 (evaluation; citation re-check)", accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5" } });
       clearTimeout(t);
+      if (r.url) finalOf.set(url, r.url);
       if (!r.ok) return { ok: false, why: `HTTP ${r.status}` };
       const type = r.headers.get("content-type") || "";
       if (!/html|text|json|xml/.test(type)) return { ok: false, why: `unreadable ${type.split(";")[0]}` };
@@ -74,7 +76,7 @@ async function page(url) {
   return p;
 }
 
-const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
+const host = (u) => { try { return new URL(finalOf.get(u) || u).hostname.replace(/^www\./, ""); } catch { return ""; } };
 
 // pick the part of a long page most related to the claim (word overlap over sliding windows)
 function excerpt(text, claim, size = 12000) {
@@ -138,6 +140,13 @@ function swarmUnits(report, L) {
   return units;
 }
 
+function linkTags(report, L) {
+  return report.replace(TAG_RE, (_, ids) => {
+    const urls = [...new Set(ids.split(/\s*[,;]\s*/).flatMap((id) => L.sources.filter((x) => x.claim === id && x.stance !== "contradicts").map((x) => x.url)))].slice(0, 4);
+    return urls.map((u, i) => `[${i + 1}](${u})`).join(" ");
+  });
+}
+
 async function baselineUnits(md) {
   const sys = `Extract the factual claims from a research report that cite a source. For each, give the claim as one self-contained sentence and the exact URL(s) the report cites for it (resolve numbered references like [3] to their URL from the report's reference list). Skip claims with no resolvable URL. Return ONLY JSON {"claims":[{"claim":"...","urls":["https://..."]}],"uncited_claims":<number of factual claims with no citation>}.`;
   const j = await ask(md.slice(0, 200_000), sys);
@@ -194,15 +203,17 @@ async function edgeCheck(question, expect, ours, theirs) {
 async function evalRun(id) {
   const dir = path.join(ROOT, "runs", id);
   const req = JSON.parse(fs.readFileSync(path.join(dir, "request.json"), "utf8"));
-  const report = fs.readFileSync(path.join(dir, "report.md"), "utf8");
+  const report = fs.readFileSync(path.join(dir, process.env.EVAL_REPORT || "report.md"), "utf8");
   const base = fs.readFileSync(path.join(dir, "baseline.md"), "utf8");
   const evs = fs.readFileSync(path.join(dir, "events.ndjson"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
   const L = readLedger(dir);
   const testset = fs.existsSync(path.join(ROOT, "eval/testset.json")) ? JSON.parse(fs.readFileSync(path.join(ROOT, "eval/testset.json"), "utf8")) : [];
   const spec = testset.find((t) => t.question === req.question) || {};
 
-  const ours = swarmUnits(report, L);
-  const { units: theirs, uncited } = await baselineUnits(base);
+  // the same extractor and the same judge for both answers
+  const [{ units: ours, uncited: ourUncited }, { units: theirs, uncited }] = await Promise.all([baselineUnits(linkTags(report, L)), baselineUnits(base)]);
+  // resolve every cited URL once, so domains are counted where the links really go
+  await pool([...new Set([...ours, ...theirs].flatMap((u) => u.urls))], 12, page);
   const [jo, jt] = await Promise.all([pool(spread(ours, PER_SYSTEM), 6, judgeUnit), pool(spread(theirs, PER_SYSTEM), 6, judgeUnit)]);
   const quotes = await quoteRate(L);
   const edge = await edgeCheck(req.question, spec.expect, report, base).catch(() => null);
@@ -217,8 +228,10 @@ async function evalRun(id) {
     kind: spec.kind || "–",
     agents: first.seats.filter((s) => ["researcher", "redteam"].includes(s.role)).length,
     judge: JUDGE,
+    method: "same Argon extraction of cited claims from both answers (swarm tags linked to their ledger sources); every cited page re-fetched; same Argon judge",
     swarm: {
       ...summarise(ours, jo),
+      uncited_claims: ourUncited,
       quote_verbatim: quotes,
       key_claims: L.claims.filter((c) => c.key).length,
       redteam_checks: L.checks.length,
@@ -247,7 +260,8 @@ async function evalRun(id) {
     edge_why: edge?.why || null,
     details: { swarm: jo, baseline: jt },
   };
-  fs.writeFileSync(path.join(dir, "eval.json"), JSON.stringify(result, null, 2));
+  result.report_file = process.env.EVAL_REPORT || "report.md";
+  fs.writeFileSync(path.join(dir, process.env.EVAL_OUT || "eval.json"), JSON.stringify(result, null, 2));
   return result;
 }
 
