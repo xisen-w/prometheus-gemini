@@ -94,7 +94,24 @@ function excerpt(text, claim, size = 12000) {
 
 const JUDGE_SYS = `You check citations. You get one claim from a research report and the text of a web page the report cites for it. Decide only from the page text: "supported" (the page states it, numbers and dates match), "partial" (the page supports part of it, or a looser version), or "unsupported" (the page does not say it, or says something different). Return ONLY JSON {"verdict":"supported|partial|unsupported","why":"one short sentence"}.`;
 
+const TOGETHER_SYS = `You check citations. You get one claim from a research report and the text of every web page the report cites for it. Decide only from these pages, taken together: "supported" (together they state every part of the claim; numbers and dates match), "partial" (they support part of it, or a looser version), or "unsupported". Return ONLY JSON {"verdict":"supported|partial|unsupported","why":"one short sentence"}.`;
+
 async function judgeUnit(unit) {
+  const r = await judgeEach(unit);
+  // second reading: all cited pages together (a compound claim may rest on several pages)
+  const pages = [];
+  for (const url of unit.urls.slice(0, 3)) { const pg = await page(url); if (pg.ok) pages.push({ url, text: pg.text }); }
+  let together = "unreachable", togetherWhy = "";
+  if (pages.length) {
+    try {
+      const v = await ask(`CLAIM: ${unit.claim}\n\n${pages.map((p, i) => `PAGE ${i + 1} (${p.url}):\n${excerpt(p.text, unit.claim, Math.floor(24000 / pages.length))}`).join("\n\n")}`, TOGETHER_SYS);
+      together = v?.verdict || "error"; togetherWhy = v?.why || "";
+    } catch (e) { together = "error"; }
+  }
+  return { ...r, together, together_why: togetherWhy };
+}
+
+async function judgeEach(unit) {
   const tried = [];
   let best = null;
   for (const url of unit.urls.slice(0, 3)) {
@@ -173,6 +190,10 @@ function summarise(units, judged) {
     unreachable: count("unreachable"),
     support_rate: reached ? +(count("supported") / reached).toFixed(3) : null,
     support_or_partial_rate: reached ? +((count("supported") + count("partial")) / reached).toFixed(3) : null,
+    together_reached: judged.filter((u) => ["supported", "partial", "unsupported"].includes(u.together)).length,
+    together_supported: judged.filter((u) => u.together === "supported").length,
+    together_unsupported: judged.filter((u) => u.together === "unsupported").length,
+    together_rate: (() => { const n = judged.filter((u) => ["supported", "partial", "unsupported"].includes(u.together)).length; return n ? +(judged.filter((u) => u.together === "supported").length / n).toFixed(3) : null; })(),
     first_url_reached: firstReached.length,
     first_url_supported: firstSupported,
     first_url_support_rate: firstReached.length ? +(firstSupported / firstReached.length).toFixed(3) : null,
@@ -228,6 +249,7 @@ async function evalRun(id) {
     kind: spec.kind || "–",
     agents: first.seats.filter((s) => ["researcher", "redteam"].includes(s.role)).length,
     judge: JUDGE,
+    mode: first.mode === "free" ? "no orchestrator" : "orchestrated",
     method: "same Argon extraction of cited claims from both answers (swarm tags linked to their ledger sources); every cited page re-fetched; same Argon judge",
     swarm: {
       ...summarise(ours, jo),

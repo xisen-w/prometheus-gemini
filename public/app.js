@@ -177,6 +177,9 @@ async function showAsk() {
             <div class="seg">${[8, 16, 32, 64, 128].map((n) => `<label><input type="radio" name="agents" value="${n}"${n === 16 ? ' checked' : ''}><span>${n}</span></label>`).join('')}</div>
           </fieldset>
           ${range('minutes', 'Minutes', 10, 120, 5, 30)}
+          <fieldset class="agents"><legend class="lab"><span>Coordination</span><span class="v" data-v="modehint">code assigns the work</span></legend>
+            <div class="seg"><label><input type="radio" name="mode" value="orchestrated" checked><span>Orchestrated</span></label><label><input type="radio" name="mode" value="free"><span>No orchestrator</span></label></div>
+          </fieldset>
           <label class="check"><input type="checkbox" name="baseline" checked> Compare with Google Deep Research</label>
         </div>
       </div>
@@ -195,6 +198,7 @@ async function showAsk() {
     if (!m.dataset.touched) { m.value = want; $('[data-v="minutes"]', f).textContent = want; }
   };
   f.minutes.addEventListener('input', () => { f.minutes.dataset.touched = '1'; });
+  $$('input[name=mode]', f).forEach((r) => r.addEventListener('change', () => { $('[data-v="modehint"]', f).textContent = f.mode.value === 'free' ? 'agents loop on a shared board; judges vote to stop' : 'code assigns the work'; }));
   $$('input[name=agents]', f).forEach((r) => r.addEventListener('change', split));
   split();
   f.question.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); f.requestSubmit(); } });
@@ -202,7 +206,7 @@ async function showAsk() {
   f.addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = $('button[type=submit]', f);
-    const body = { question: f.question.value.trim(), agents: +f.agents.value, minutes: +f.minutes.value, baseline: f.baseline.checked };
+    const body = { question: f.question.value.trim(), agents: +f.agents.value, minutes: +f.minutes.value, baseline: f.baseline.checked, mode: f.mode.value };
     if (body.question.length < 8) { $('#err').textContent = 'A little longer, please.'; return; }
     btn.disabled = true; btn.textContent = 'Starting';
     try {
@@ -349,6 +353,18 @@ function handle(ev, animate) {
       for (const s of ev.seats || []) S.seats.set(s.id, s);
       document.title = `${ev.question || 'Run'} · Prometheus`;
       $('#q').textContent = ev.question || ev.id;
+      if (ev.mode === 'free') {
+        // no fixed steps: agents loop until the judges vote to stop
+        $$('#rail li').forEach((li) => { if (['plan', 'crosscheck', 'redteam', 'fix'].includes(li.dataset.p)) li.remove(); else if (li.dataset.p === 'research') li.textContent = 'Agents loop'; else if (li.dataset.p === 'gate') li.textContent = 'Judges stop it'; });
+      }
+      break;
+    case 'vote':
+      S.votes = { yes: ev.yes, of: ev.of };
+      roomAdd(simpleLine(ev, `<span class="seat" style="${seatVars(ev.seat)}">${esc(ev.seat)}</span> votes ${ev.terminate ? '<b class="pass">stop</b>' : '<b>keep going</b>'} <span class="faint">${esc(ev.yes)}/${esc(ev.of)} to stop · ${esc(ev.why || '')}</span>`), animate);
+      break;
+    case 'terminate':
+      S.terminate = ev;
+      roomAdd(simpleLine(ev, `<b>state = terminate</b> · ${ev.reason === 'judges' ? `${esc(ev.yes)} of ${esc(ev.of)} judges voted to stop` : `time budget ran out (${esc(ev.yes)} of ${esc(ev.of)} judges had voted to stop)`}`), animate);
       break;
     case 'phase':
       S.phase = ev.name;
@@ -449,6 +465,7 @@ function setMeta() {
   else status = '<span class="live">Live</span>';
   const parts = [status];
   if (S.run) parts.push(`<span>${esc(fmtDur(elapsed))}${budget}</span>`, `<span>${esc(shortDate(S.run.started_at))}</span>`, `<span>${esc(S.id)}</span>`);
+  if (S.run?.mode === 'free') parts.push(`<span>no orchestrator${S.votes ? ` · ${S.votes.yes}/${S.votes.of} judges to stop` : ''}${S.terminate ? ' · terminated' : ''}</span>`);
   const html = parts.join('');
   if (m.innerHTML !== html) m.innerHTML = html;
 }

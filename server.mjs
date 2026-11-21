@@ -68,6 +68,8 @@ function startRun(body) {
     redteam: Math.max(1, Math.min(3, Number(body.redteam) || 2)),
     minutes: Math.max(5, Math.min(120, Number(body.minutes) || 30)),
     baseline: body.baseline !== false,
+    ...(body.mode === "free" ? { mode: "free" } : {}),
+    ...(/^[A-Za-z0-9_-]{1,64}$/.test(body.baseline_from || "") ? { baseline_from: body.baseline_from } : {}),
     created_at: d.toISOString(),
   };
   fs.writeFileSync(path.join(dir, "request.json"), JSON.stringify(req, null, 2));

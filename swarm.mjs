@@ -287,13 +287,14 @@ function protocol(run, seat) {
     seat.role === "redteam"
       ? `Your challenge ids start with X${n}- (X${n}-1, X${n}-2, ...). check rows have no id. If you add a source, its id starts with S${seat.id}-.`
       : `Your ids start with your number: claims C${n}-1, C${n}-2...; sources S${n}-1...; extra questions Q${n}-1.... You may add sources to another seat's claim (set "claim" to their id) but the source id stays yours.`;
-  return `You are ${seat.id}, a ${seat.role} in a deep-research team of Gemini agents working on ONE question together. Team: ${team}. Today is ${today()} (UTC).
+  if (run.free) team += `. Nobody assigns work and nobody tells you what to do next: you decide. Everyone shares one message board and one evidence ledger. You work in a loop: each turn you see what is new on the board and in the ledger, do one piece of work, post, and come back. You keep going until the red-team judges vote to stop`;
+  return `You are ${seat.id}, a ${seat.role === "redteam" && run.free ? "red-team judge" : seat.role} in a deep-research team of Gemini agents working on ONE question together. Team: ${team}. Today is ${today()} (UTC).
 You have your own sandbox with Google Search and page reading (url_context). Search widely, open pages and read them in full, prefer primary sources (official pages, filings, statistics, papers, original reporting) over write-ups of them. Never answer from memory.
 
 Every finding goes into the shared evidence ledger. End EVERY reply with exactly two fenced blocks:
 
 \`\`\`room
-@R2 one message per line to a teammate (they only see messages that @ them; @all reaches everyone)
+${run.free ? "one message per line; EVERYONE reads the board. Say what you are taking (start the line with TAKING:), what you found that others should know, ask for help, answer others. Use @R7 to address someone" : "@R2 one message per line to a teammate (they only see messages that @ them; @all reaches everyone)"}
 \`\`\`
 \`\`\`ledger
 {"type":"claim","id":"C${n}-1","text":"...","key":true,"status":"kept"}
@@ -792,7 +793,13 @@ async function mockTurn(seat, input) {
       if (cl[1]) ledger += "\n" + JSON.stringify({ type: "challenge", id: `X${n}-${k}`, claim: cl[1], to: cl[2], text: "mock challenge" });
     }
   }
-  const text = `Done.\n\`\`\`room\n@all mock message from ${seat.id}\n\`\`\`\n\`\`\`ledger\n${ledger}\n\`\`\``;
+  if (seat.role === "researcher" && !ledger && /TAKING/.test(input)) ledger = [
+    { type: "claim", id: `C${n}-${k}`, text: `Mock claim ${k} from ${seat.id}`, key: true, status: "kept" },
+    { type: "source", id: `S${n}-${k}a`, claim: `C${n}-${k}`, url: "https://example.com/a", title: "A", publisher: "Pub A", quote: "example domain", stance: "agrees" },
+    { type: "source", id: `S${n}-${k}b`, claim: `C${n}-${k}`, url: "https://example.org/b", title: "B", publisher: "Pub B", quote: "example domain", stance: "agrees" },
+  ].map((r) => JSON.stringify(r)).join("\n");
+  const vote = seat.role === "redteam" ? `\n\`\`\`vote\n{"terminate": ${/turn [3-9] of your loop/.test(input)}, "why": "mock"}\n\`\`\`` : "";
+  const text = `Done.\n\`\`\`room\n${/TAKING/.test(input) ? `TAKING: mock part ${k}` : `@all mock message from ${seat.id}`}\n\`\`\`\n\`\`\`ledger\n${ledger}\n\`\`\`${vote}`;
   return { text, id: `mock_${k}`, searches: ["mock query a", "mock query b"], urls: ["https://example.com/a"], tokens: 5000 };
 }
 async function mockModel(input, system) {
@@ -801,6 +808,222 @@ async function mockModel(input, system) {
   if (system.includes("judge")) return { text: '{"pass":true,"problems":[]}', id: "mock_j", searches: [], urls: [], tokens: 100 };
   const ids = [...new Set(input.match(/C\d+-\d+/g) || [])];
   return { text: `# Mock report\n\nAnswer. ${ids.map((i) => `[${i}]`).join(" ")}\n\n## Confidence\nMedium.`, id: "mock_w", searches: [], urls: [], tokens: 100 };
+}
+
+// ---------------------------------------------------------------- free mode: no orchestrator
+// Every agent runs its own loop until state = terminate. Nothing assigns work: agents coordinate on a shared
+// board. The terminate state comes from the red-team judges' votes (or the time budget running out).
+const QUORUM = Number(process.env.SWARM_TERMINATE_QUORUM || 2 / 3);
+const MAX_TURNS = Number(process.env.SWARM_MAX_TURNS || 12);
+
+function boardFor(run, seat) {
+  const since = seat.boardSeen || 0;
+  const tag = new RegExp(`@${seat.id}(?![0-9])`);
+  const fresh = run.room.slice(since).filter((m) => m.seat !== seat.id);
+  seat.boardSeen = run.room.length;
+  const toMe = fresh.filter((m) => tag.test(m.text));
+  const rest = fresh.filter((m) => !tag.test(m.text) && !/^TAKING:/i.test(m.text));
+  const shown = rest.slice(-50);
+  // who is on what: everyone's latest TAKING line stays visible however long the board gets
+  const taking = new Map();
+  for (const m of run.room) if (/^TAKING:/i.test(m.text) && m.seat !== seat.id) taking.set(m.seat, m.text.replace(/^TAKING:\s*/i, "").slice(0, 140));
+  const mine = [...run.room].reverse().find((m) => m.seat === seat.id && /^TAKING:/i.test(m.text));
+  return [
+    taking.size ? `WHO IS ON WHAT (latest TAKING line of each agent):\n${[...taking].map(([k, v]) => `${k}: ${v}`).join("\n")}` : "The board is empty: you are among the first.",
+    mine ? `YOU SAID: ${mine.text}` : "",
+    toMe.length ? `ADDRESSED TO YOU:\n${toMe.map((m) => `[${m.seat}] ${m.text}`).join("\n")}` : "",
+    shown.length ? `NEW ON THE BOARD${rest.length > shown.length ? ` (${rest.length - shown.length} older messages not shown)` : ""}:\n${shown.map((m) => `[${m.seat}] ${m.text}`).join("\n")}` : "",
+  ].filter(Boolean).join("\n\n");
+}
+
+function freeStats(run) {
+  const v = run.view();
+  const confirmed = v.keyClaims.filter((c) => v.sourcesOf(c.id).some((s) => v.checksOf(s.id).some((k) => k.result === "confirmed"))).length;
+  const votes = [...(run.votes || new Map()).values()];
+  return { v, confirmed, line: `LEDGER NOW: ${v.claims.size} claims (${v.keyClaims.length} key, ${confirmed} of them with a confirmed judge check), ${v.sources.size} sources, ${v.openChallenges.length} open challenges, ${v.notFound.length} not-found notes. Judges voting to stop: ${votes.filter((x) => x.terminate).length} of ${run.seats.filter((s) => s.role === "redteam").length}.` };
+}
+
+function workerInput(run, seat, n) {
+  const { v, line } = freeStats(run);
+  const ch = v.openChallenges.filter((x) => x.to === seat.id || v.claims.get(x.claim)?.by === seat.id);
+  const wrong = v.checks.filter((k) => k.result !== "confirmed" && v.sources.get(k.source)?.by === seat.id).slice(-10);
+  const rejected = (seat.rejected || []).map((r) => `- ${JSON.stringify(r.row).slice(0, 160)} -> ${r.why}`);
+  const mine = [...v.claims.values()].filter((c) => c.by === seat.id && v.kept(c));
+  const others = [...v.claims.values()].filter((c) => c.by !== seat.id && v.kept(c)).slice(-70);
+  const brief = (c) => {
+    const src = v.sourcesOf(c.id);
+    const pubs = new Set(src.filter((x) => x.stance !== "contradicts").map((x) => (x.publisher || "").toLowerCase())).size;
+    return `- ${c.id} (${c.by}${c.key ? ", key" : ""}): ${c.text.slice(0, 170)} | ${pubs} publisher${pubs === 1 ? "" : "s"}${src.some((x) => v.checksOf(x.id).some((k) => k.result === "confirmed")) ? ", confirmed" : ""}`;
+  };
+  return `THE QUESTION: ${run.req.question}
+
+${boardFor(run, seat)}
+
+${line}
+${ch.length ? `\nOPEN CHALLENGES ON YOUR CLAIMS (fix the claim, add sources or drop it, then write a resolution row):\n${ch.map((x) => `- ${x.id} on ${x.claim} by ${x.by}: ${x.text}`).join("\n")}\n` : ""}${wrong.length ? `\nJUDGE CHECKS THAT DID NOT CONFIRM YOUR SOURCES:\n${wrong.map((k) => `- ${k.source}: ${k.result} by ${k.by}: ${k.note || ""}`).join("\n")}\n` : ""}${rejected.length ? `\nLEDGER ROWS THE SYSTEM REJECTED LAST TURN:\n${rejected.join("\n")}\n` : ""}${mine.length ? `\nYOUR CLAIMS SO FAR:\n${mine.slice(-30).map(brief).join("\n")}\n` : ""}${others.length ? `\nRECENT CLAIMS BY OTHERS (do not redo these; cross-check a key one from a different publisher if it matters and has one publisher):\n${others.map(brief).join("\n")}\n` : ""}
+This is turn ${n} of your loop. ${n === 1 ? "First decide what part of the question you take that nobody else has taken, and post it on the board as a line starting with TAKING:. Then research it." : "Decide what is most useful now: answer challenges on your claims first; then go deeper on what you took, take a part nobody covers (post a new TAKING: line), cross-check someone's single-publisher key claim, or hunt for evidence against the emerging answer."} One solid piece of work per turn (several searches, pages opened and read), then stop so you can read the board again. If there is truly nothing useful left for you, say so on the board and write an empty ledger block.`;
+}
+
+function judgeInput(run, seat, n) {
+  const { v, line } = freeStats(run);
+  const unchecked = v.keyClaims.filter((c) => !v.sourcesOf(c.id).some((s) => v.checksOf(s.id).some((k) => k.result === "confirmed")));
+  const slice = unchecked.sort(() => Math.random() - 0.5).slice(0, 10).map((c) => c.id);
+  const mineCh = [...v.challenges.values()].filter((x) => x.by === seat.id).slice(-12);
+  return `THE QUESTION: ${run.req.question}
+
+${boardFor(run, seat)}
+
+${line}
+
+You are one of the red-team judges. You do not write the answer; you try to break it, and you decide when the team may stop. This is turn ${n} of your loop.
+1. Re-open sources yourself (open the URL) for key claims that have no confirmed check and write a check row for each: confirmed (the quote is on the page and supports the claim), wrong, or unreachable.
+2. Look for what the team skipped: parts of the question nobody took, claims on one publisher without "single_source", numbers that disagree, stale dates, contradicting evidence nobody logged. For each problem write a challenge row {"type":"challenge","id":"X${seat.id.slice(1)}-k","claim":"C…","to":"<seat that owns the claim>","text":"…"}; for a gap nobody covers, say it on the board.
+3. Check how your earlier challenges were resolved.
+${mineCh.length ? `\nYOUR CHALLENGES:\n${mineCh.map((x) => `- ${x.id} on ${x.claim}: ${x.text.slice(0, 140)} -> ${v.resolutions.get(x.id)?.text?.slice(0, 160) || "NOT RESOLVED YET"}`).join("\n")}\n` : ""}
+KEY CLAIMS WITH NO CONFIRMED CHECK (${unchecked.length} in total; this is your slice, other judges see other slices):
+${slice.length ? claimDigest(run, slice) : "(none right now)"}
+
+After the room and ledger blocks, end with a third block: your vote on whether the whole team should stop now.
+\`\`\`vote
+{"terminate": false, "why": "one sentence"}
+\`\`\`
+Vote true only when the question is answered in depth, the key claims you examined hold, you know of no open challenge or uncovered part that matters, and more work would not change the answer. The team stops when ${Math.round(QUORUM * 100)}% of the judges vote true.`;
+}
+
+function recordVote(run, seat, text) {
+  let vote = null;
+  try { vote = JSON.parse((blocks(text, "vote").match(/\{[\s\S]*\}/) || ["null"])[0]); } catch {}
+  if (!vote || typeof vote.terminate !== "boolean") return;
+  run.votes ??= new Map();
+  run.votes.set(seat.id, { terminate: vote.terminate, why: String(vote.why || "").slice(0, 300) });
+  const judges = run.seats.filter((s) => s.role === "redteam").length;
+  const yes = [...run.votes.values()].filter((x) => x.terminate).length;
+  run.emit({ t: "vote", seat: seat.id, terminate: vote.terminate, why: String(vote.why || "").slice(0, 300), yes, of: judges });
+  if (!run.terminate && yes >= Math.ceil(QUORUM * judges)) {
+    run.terminate = { reason: "judges", yes, of: judges };
+    run.emit({ t: "terminate", reason: "judges", yes, of: judges });
+    run.say("system", `state = terminate: ${yes} of ${judges} judges voted to stop. Agents finish what they are doing and stop.`);
+  }
+}
+
+async function seatLoop(run, seat) {
+  const judge = seat.role === "redteam";
+  // agents arrive a few at a time, so later arrivals can see what earlier ones took
+  await sleep(seat.arrive || 0);
+  let idle = 0;
+  for (let n = 1; n <= MAX_TURNS && !run.terminate; n++) {
+    if (run.minutesLeft() < 5) break;
+    if (judge && !run.view().claims.size) { n--; await sleep(20_000); continue; }
+    const rowsBefore = run.rows.length, roomBefore = run.room.length;
+    const res = await seatTurn(run, seat, judge ? "redteam" : "research", judge ? judgeInput(run, seat, n) : workerInput(run, seat, n));
+    if (!res) { await sleep(15_000); continue; }
+    if (judge) recordVote(run, seat, res.text);
+    const produced = run.rows.slice(rowsBefore).some((r) => r.by === seat.id) || run.room.slice(roomBefore).some((m) => m.seat === seat.id);
+    if (produced) idle = 0;
+    else { idle++; await sleep(Math.min(90_000, 30_000 * idle)); }
+  }
+}
+
+// a single writer cannot hold a 100-agent ledger: Argon outlines it, section writers write, a lead joins
+async function writeOutlined(run) {
+  run.emit({ t: "turn", seat: "W", phase: "write", status: "started" });
+  const t0 = Date.now();
+  try {
+    const v = run.view();
+    const kept = [...v.claims.values()].filter(v.kept);
+    const o = await modelCall(`USER QUESTION: ${run.req.question}\n\nCLAIMS:\n${kept.map((c) => `${c.id}${c.key ? " key" : ""}: ${c.text.slice(0, 200)}`).join("\n")}`, `You outline a deep-research report. Group the claims into 5-10 sections that together answer the user's question; every key claim goes in exactly one section. Return ONLY JSON {"sections":[{"title":"...","claims":["C1-2", ...]}]}. Titles in the language of the user's question.`);
+    run.totals.tokens += o.tokens;
+    const sections = (JSON.parse((o.text.match(/\{[\s\S]*\}/) || ["{}"])[0]).sections || []).filter((x) => (x.claims || []).length);
+    const sys = `You write ONE section of a deep-research report from the evidence given. Write in the language of the user's question. Start with a "## " heading. Every sentence that states a ledger claim ends with its id in square brackets, like [C12-3]; cite only the ids given, invent nothing, and state only what that claim's text and quotes say. Link only URLs from the evidence. Name contradicting evidence and how it was weighed; say plainly when a key number rests on one publisher. Dense and concrete; no preamble.`;
+    const parts = await Promise.all(sections.map(async (sec) => {
+      try {
+        const ids = sec.claims.filter((id) => v.claims.has(id));
+        const ch = [...v.challenges.values()].filter((x) => ids.includes(x.claim)).map((x) => `- ${x.id} on ${x.claim}: ${x.text} -> ${v.resolutions.get(x.id)?.text || "UNRESOLVED"}`);
+        const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\nSECTION: ${sec.title}\n\nCLAIMS WITH SOURCES AND CHECKS\n${claimDigest(run, ids)}\n\nCHALLENGES\n${ch.join("\n") || "(none)"}`, sys);
+        run.totals.tokens += res.tokens;
+        return res.text.trim();
+      } catch (e) { return `## ${sec.title}\n\n(section writer failed: ${String(e.message).slice(0, 120)})`; }
+    }));
+    const lead = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\n\nSECTIONS:\n${parts.join("\n\n")}\n\nCOMPACT LEDGER:\n${ledgerDigest(run, { compact: true })}`, `You are the lead writer of a deep-research report written by a ${run.seats.length}-agent team. The sections are already written. Write in the language of the user's question, and output exactly two parts separated by a line containing only =====SECTIONS=====:
+PART 1: a "# " title, then the direct answer in 3-6 sentences, citing claim ids like [C3-1] from the sections.
+PART 2: "## Strongest contradicting evidence" (how it was weighed), "## Searched, not found", and "## Confidence" (high / medium / low with reasons, what could change, which key numbers rest on one publisher).
+Cite only ids present in the sections or the compact ledger. Never invent facts.`);
+    run.totals.tokens += lead.tokens;
+    const [head, tail = ""] = lead.text.split(/^=====SECTIONS=====\s*$/m);
+    const report = `${head.trim()}\n\n${parts.join("\n\n")}\n\n${tail.trim()}\n`;
+    fs.writeFileSync(path.join(run.dir, "report.md"), report);
+    run.emit({ t: "turn", seat: "W", phase: "write", status: "completed", interaction_id: lead.id, searches: [], urls: [], tokens: lead.tokens, ms: Date.now() - t0, error: null });
+    run.emit({ t: "report" });
+    return report;
+  } catch (e) {
+    run.emit({ t: "turn", seat: "W", phase: "write", status: "failed", ms: Date.now() - t0, error: String(e.message).slice(0, 400) });
+    return null;
+  }
+}
+
+// reuse the Deep Research answer of another run on the same question (same baseline for both modes)
+async function baselineFrom(run, other) {
+  run.emit({ t: "baseline", status: "started", agent: BASELINE_AGENT, from: other });
+  const dir = path.join(ROOT, "runs", other);
+  for (let i = 0; i < 400; i++) {
+    try {
+      const ev = fs.readFileSync(path.join(dir, "events.ndjson"), "utf8").trim().split("\n").filter((l) => l.includes('"t":"baseline"')).map((l) => JSON.parse(l)).pop();
+      if (ev && ev.status === "completed" && fs.existsSync(path.join(dir, "baseline.md"))) {
+        fs.copyFileSync(path.join(dir, "baseline.md"), path.join(run.dir, "baseline.md"));
+        run.emit({ ...ev, at: undefined, from: other });
+        return;
+      }
+      if (ev && ev.status === "failed") break;
+    } catch {}
+    await sleep(15_000);
+  }
+  run.emit({ t: "baseline", status: "failed", agent: BASELINE_AGENT, error: `no baseline from ${other}` });
+}
+
+async function freeRun(run, R, X) {
+  run.free = true;
+  run.branches = [{ id: "B1", title: "", scope: "" }];
+  const N = R + X;
+  run.seats = [
+    ...Array.from({ length: R }, (_, k) => ({ id: `R${k + 1}`, role: "researcher", model: SEAT_MODEL, arrive: Math.floor(k / 8) * (N > 20 ? 25_000 : 8_000) })),
+    ...Array.from({ length: X }, (_, k) => ({ id: `X${k + 1}`, role: "redteam", model: SEAT_MODEL, arrive: 60_000 + k * 2_000 })),
+    { id: "W", role: "writer", model: LEAD_MODEL },
+    { id: "J", role: "judge", model: LEAD_MODEL },
+  ];
+  run.emit({ t: "run", id: run.id, mode: "free", question: run.req.question, seats: run.seats.map(({ id, role, model }) => ({ id, role, model })), branches: 1, budget_min: run.req.minutes || 30, agent: MOCK ? "mock" : AGENT_ID, quorum: QUORUM, started_at: new Date(run.started).toISOString() });
+  const base = run.req.baseline_from ? baselineFrom(run, run.req.baseline_from) : baseline(run);
+  let status = "ended";
+  try {
+    phaseOnce(run, "research", 1);
+    run.say("system", `No orchestrator. ${R} researchers and ${X} red-team judges each run their own loop and coordinate on this board. The run stops when ${Math.round(QUORUM * 100)}% of the judges vote to stop, or when the time budget runs out.`);
+    const loops = run.seats.filter((s) => ["researcher", "redteam"].includes(s.role)).map((s) => seatLoop(run, s));
+    // the budget is the only other way to reach terminate
+    const budget = (async () => {
+      while (!run.terminate && run.minutesLeft() > 8) await sleep(5000);
+      if (!run.terminate) {
+        const judges = X, yes = [...(run.votes || new Map()).values()].filter((x) => x.terminate).length;
+        run.terminate = { reason: "budget", yes, of: judges };
+        run.emit({ t: "terminate", reason: "budget", yes, of: judges });
+        run.say("system", `state = terminate: the time budget ran out (${yes} of ${judges} judges had voted to stop).`);
+      }
+    })();
+    await budget;
+    // agents finish the turn they are in, within a grace period
+    await Promise.race([Promise.allSettled(loops), sleep(GRACE_MS)]);
+    const g = await gate(run, 1); // not a blocker here: recorded to compare with the orchestrated mode
+    let report = N > 24 ? (run.emit({ t: "phase", name: "write", round: 1 }), await writeOutlined(run)) : await write(run);
+    if (report) report = await verifyReport(run, report);
+    if (report) {
+      const j = await judge(run, 1, report);
+      if (j.pass) status = "passed";
+    }
+  } catch (e) {
+    run.say("system", `Run error: ${String(e.message || e).slice(0, 300)}`);
+    status = "failed";
+  }
+  await Promise.race([base, sleep(Math.max(0, run.deadline + 10 * 60_000 - Date.now()))]);
+  run.emit({ t: "phase", name: "done", round: 1 });
+  run.emit({ t: "done", status, totals: { ...run.totals, minutes: Math.round((Date.now() - run.started) / 6000) / 10 } });
 }
 
 // ---------------------------------------------------------------- main
@@ -822,6 +1045,7 @@ async function main() {
     R = Math.max(2, Math.min(8, run.req.researchers || 6));
     X = Math.max(1, Math.min(3, run.req.redteam || 2));
   }
+  if (run.req.mode === "free") return freeRun(run, R, X);
   const B = Math.max(1, Math.round(R / 12));
   run.branches = Array.from({ length: B }, (_, i) => ({ id: `B${i + 1}`, title: "", scope: "" }));
   run.seats = [
