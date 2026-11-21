@@ -93,12 +93,12 @@ function open(id) {
   es = new EventSource(`/api/runs/${id}/stream`);
   es.onmessage = (m) => {
     let ev; try { ev = JSON.parse(m.data); } catch { return; }
-    if (ev.t === 'run') { $('#q').textContent = ev.question; S.start = Date.parse(ev.started_at); S.agents = (ev.seats || []).filter((s) => s.role === 'researcher' || s.role === 'redteam').length; document.title = `${ev.question} · Prometheus on Gemini`; }
+    if (ev.t === 'run') { Object.assign(S, { searches: 0, pages: new Set(), claims: 0, checks: 0, done: null }); $('#q').textContent = ev.question; S.start = Date.parse(ev.started_at); S.agents = (ev.seats || []).filter((s) => s.role === 'researcher' || s.role === 'redteam').length; document.title = `${ev.question} · Prometheus on Gemini`; }
     else if (ev.t === 'phase') S.phase = ev.name;
     else if (ev.t === 'turn' && ev.status === 'completed') { S.searches += (ev.searches || []).length; for (const u of ev.urls || []) S.pages.add(u); }
     else if (ev.t === 'ledger') for (const r of ev.rows || []) { if (r.type === 'claim') S.claims++; if (r.type === 'check') S.checks++; }
     else if (ev.t === 'report') loadReport();
-    else if (ev.t === 'done') { S.done = ev; S.phase = 'done'; if (!S.report) loadReport(); }
+    else if (ev.t === 'done') { S.done = ev; S.phase = 'done'; es.close(); clearInterval(timer); if (!S.report) loadReport(); }
     paint();
   };
   timer = setInterval(paint, 15000);
