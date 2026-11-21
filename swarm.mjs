@@ -281,6 +281,7 @@ function parseRoom(text) {
 }
 
 // ---------------------------------------------------------------- prompts
+const SWEEP = ` If the question is about a specific organisation, product or person, the FIRST branch or the first sub-questions are a full sweep of its own footprint, one surface per sub-question: every page of its own site (sitemap.xml, robots.txt, likely paths such as /privacy /terms /careers /jobs /about /blog /docs /pricing /security), every subdomain (certificate-transparency listings such as crt.sh, the app or login host, the trust centre, the status page, the docs host) with the same paths tried on each, the page source and scripts of its app and login pages, its legal and trust documents (privacy policy, terms, subprocessor list), its job postings on its own site and on hiring platforms, its code and model repositories, company and visa filings, and archived copies of all of these.`;
 const today = () => new Date().toISOString().slice(0, 10);
 
 function protocol(run, seat) {
@@ -314,6 +315,8 @@ One JSON object per line. Row types: question {id,text,parent}, claim {id,text,k
 ${ids}
 Rules:
 - quote is copied character-for-character from the page you opened. The system re-opens pages and searches for the quote; a quote it cannot find fails the whole submission.
+- The subject's own pages come first. When the question is about a specific organisation, product or person, what its own site, app, legal documents, job postings and filings say outranks any press report. Read them exhaustively rather than sampling: fetch sitemap.xml and robots.txt, try likely paths on every host you find, and when page reading returns little (a login page, a script-rendered page) use your sandbox shell: curl the page, read its HTML source, its title and meta tags, and the script files it loads, and look for product names, feature names, API routes and copy. The wording of a login page, a document in a trust centre, a job title, or a subprocessor list is evidence about what is being built: log it as a key claim and say in the room what it implies.
+- Check that a page is about the right subject: other organisations can share the name. Drop sources about a namesake.
 - One fact per claim. A claim states only what its quoted sentence itself says: one number, one date, one event. Do not pack several facts, a list, or your own summary into one claim; split them into separate claims, each with its own quote. An independent checker re-opens the page and fails any claim that says more than the page.
 - A key claim (one the answer rests on) needs two independent publishers. If you can only find one, set "single_source": true.
 - stance is about the claim on that row: "contradicts" if the source disagrees with that claim. Actively look for the strongest contradicting evidence.
@@ -414,7 +417,7 @@ async function plan(run) {
   let rows = [];
   if (B === 1) {
     const k = researchers.length;
-    const sys = `You plan deep research. Split the user's question into the sub-questions a careful analyst must answer to give a trustworthy answer: definitions and scope, the key facts and numbers, how they are measured, the strongest counter-evidence, and what could change the answer. Return ONLY JSON: {"questions":[{"id":"Q0-1","text":"...","parent":null}, ...]} with ${Math.max(k + 2, 6)}-${Math.max(2 * k, 10)} questions; children use "parent". ${lang}`;
+    const sys = `You plan deep research. Split the user's question into the sub-questions a careful analyst must answer to give a trustworthy answer: definitions and scope, the key facts and numbers, how they are measured, the strongest counter-evidence, and what could change the answer. Return ONLY JSON: {"questions":[{"id":"Q0-1","text":"...","parent":null}, ...]} with ${Math.max(k + 2, 6)}-${Math.max(2 * k, 10)} questions; children use "parent".${SWEEP} ${lang}`;
     try {
       const { res, json } = await planCall(`User question (today is ${today()}):\n${run.req.question}`, sys);
       run.totals.tokens += res.tokens;
@@ -425,7 +428,7 @@ async function plan(run) {
     if (!rows.length) rows = [{ type: "question", id: "Q0-1", text: run.req.question, parent: null, branch: "B1" }];
     rows.forEach((q, i) => (q.owner = researchers[i % k].id));
   } else {
-    const sys1 = `You are the lead planner of a ${run.seats.length}-agent deep-research team. Split the user's question into exactly ${B} branches that together cover everything a careful analyst must establish (scope and definitions, the key facts and numbers, how they are measured, causes, comparisons, the strongest counter-evidence, what could change the answer). Branches must not overlap. Return ONLY JSON: {"branches":[{"title":"short title","scope":"one or two sentences: what this branch must establish"}]}. ${lang}`;
+    const sys1 = `You are the lead planner of a ${run.seats.length}-agent deep-research team. Split the user's question into exactly ${B} branches that together cover everything a careful analyst must establish (scope and definitions, the key facts and numbers, how they are measured, causes, comparisons, the strongest counter-evidence, what could change the answer). Branches must not overlap. Return ONLY JSON: {"branches":[{"title":"short title","scope":"one or two sentences: what this branch must establish"}]}.${SWEEP} ${lang}`;
     let branches = [];
     try {
       const { res, json } = await planCall(`User question (today is ${today()}):\n${run.req.question}`, sys1);
@@ -443,7 +446,7 @@ async function plan(run) {
       run.branches.map(async (b) => {
         const team = researchers.filter((r) => r.branch === b.id);
         const n = team.length;
-        const sys2 = `You plan one branch of a deep-research project. Split the branch into ${n + 2}-${2 * n} concrete, researchable sub-questions (facts, numbers, how they are measured, counter-evidence, what could change). Return ONLY JSON: {"questions":[{"text":"..."}]}. ${lang}`;
+        const sys2 = `You plan one branch of a deep-research project. Split the branch into ${n + 2}-${2 * n} concrete, researchable sub-questions (facts, numbers, how they are measured, counter-evidence, what could change). Return ONLY JSON: {"questions":[{"text":"..."}]}. If this branch is the sweep of the subject's own footprint, give each sub-question one concrete surface to read exhaustively (one host or one kind of document). ${lang}`;
         let qs = [];
         try {
           const { res, json } = await planCall(`User question: ${run.req.question}\nToday: ${today()}\nAll branches:\n${run.branches.map((x) => `- ${x.id} ${x.title}: ${x.scope}`).join("\n")}\n\nYOUR BRANCH: ${b.id} ${b.title}: ${b.scope}`, sys2);
@@ -698,6 +701,7 @@ async function write(run, judgeNotes = "") {
 - Link only URLs that appear in the ledger (Markdown links).
 - Include a section on the strongest contradicting evidence and how it was weighed, a "Searched, not found" section, and a final "Confidence" section (high / medium / low, with reasons and what could change).
 - Say plainly when a key number rests on a single publisher.
+- When the question is about a specific organisation, product or person, give what its own pages, app, documents, job postings and filings show its own section near the top, including small clues (the wording of a login page, a trust-centre document, a job title) and what each implies; press reports come after.
 - Be concise: short is fine, shallow is not.`;
   try {
     const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\n\n${ledgerDigest(run)}${judgeNotes ? `\n\nTHE JUDGE REFUSED THE LAST REPORT:\n${judgeNotes}` : ""}`, sys);
@@ -718,7 +722,7 @@ async function writeBig(run, judgeNotes) {
   try {
     const sections = await writeSections(run, judgeNotes);
     const sys = `You are the lead writer of a deep-research report written by a ${run.seats.length}-agent team. The branch sections are already written. Write in the language of the user's question, and output exactly two parts separated by a line containing only =====SECTIONS=====:
-PART 1: a "# " title, then the direct answer in 3-6 sentences, citing claim ids like [C3-1] from the sections.
+PART 1: a "# " title, then the direct answer in 3-6 sentences, citing claim ids like [C3-1] from the sections. When the question is about a specific organisation, product or person, the answer must use what its own pages, app, documents, job postings and filings show (including small clues such as the wording of a login page), not only press reports.
 PART 2: "## Strongest contradicting evidence" (how it was weighed), "## Searched, not found", and "## Confidence" (high / medium / low with reasons, what could change, which key numbers rest on one publisher).
 Cite only ids present in the sections or the compact ledger. Never invent facts.`;
     const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\n\nSECTIONS:\n${sections.join("\n\n")}\n\nCOMPACT LEDGER:\n${ledgerDigest(run, { compact: true })}${judgeNotes ? `\n\nTHE JUDGE REFUSED THE LAST REPORT:\n${judgeNotes}` : ""}`, sys);
@@ -956,7 +960,7 @@ async function writeOutlined(run) {
       } catch (e) { return `## ${sec.title}\n\n(section writer failed: ${String(e.message).slice(0, 120)})`; }
     }));
     const lead = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\n\nSECTIONS:\n${parts.join("\n\n")}\n\nCOMPACT LEDGER:\n${ledgerDigest(run, { compact: true })}`, `You are the lead writer of a deep-research report written by a ${run.seats.length}-agent team. The sections are already written. Write in the language of the user's question, and output exactly two parts separated by a line containing only =====SECTIONS=====:
-PART 1: a "# " title, then the direct answer in 3-6 sentences, citing claim ids like [C3-1] from the sections.
+PART 1: a "# " title, then the direct answer in 3-6 sentences, citing claim ids like [C3-1] from the sections. When the question is about a specific organisation, product or person, the answer must use what its own pages, app, documents, job postings and filings show (including small clues such as the wording of a login page), not only press reports.
 PART 2: "## Strongest contradicting evidence" (how it was weighed), "## Searched, not found", and "## Confidence" (high / medium / low with reasons, what could change, which key numbers rest on one publisher).
 Cite only ids present in the sections or the compact ledger. Never invent facts.`);
     run.totals.tokens += lead.tokens;

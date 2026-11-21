@@ -16,6 +16,9 @@ import os from "node:os";
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const DIR = process.env.FORMS_DIR || "/mnt/data0/xisen/workspace/runs/forms-eval-20261121";
 const SRC = path.join(DIR, "data/funsd/dataset");
+// v1 = first prompt; v2 = prompt revised after reading dev failures (units, table rows)
+const TAG = process.env.FORMS_TAG || "v2";
+const OUTDIR = TAG === "v1" ? "out" : `out-${TAG}`;
 const MODELS = ["gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon", "gemini-4-argon"];
 const VERIFIERS = ["gemini-4-argon", "gemini-4-carbon"];
 const short = (m) => m.replace("gemini-4-", "");
@@ -150,7 +153,9 @@ const usage = { calls: 0, tokens: 0, failed: 0 };
 
 const RULES = `- field = the label exactly as printed on the form (for example "Date:" or "TO:").
 - value = the text entered for that field exactly as it appears, typed or handwritten. Join a multi-line value with single spaces. Do not correct spelling, do not reformat dates or numbers, do not summarise.
-- Only fields that have a value entered. A label with nothing filled in is left out. The same label can appear more than once on a form: list each occurrence.
+${TAG === "v1" ? "" : `- Copy everything written in the field's space, including units and symbols printed next to the entry (for example "84 mm", "# 839 / 869", "36 gm/ m2").
+- In a table, the row label is the field and the value is all the entries of that row joined left to right with single spaces (for example field "TAR", value "9.1 5.5"). Do not make one field per cell.
+`}- Only fields that have a value entered. A label with nothing filled in is left out. The same label can appear more than once on a form: list each occurrence.
 - Do not include headings, logos, page furniture or free text that is not the value of a labelled field. Never invent a field.`;
 const EXTRACT = `This is a scan of a real paper form. It may be rotated, skewed, faint or low resolution. Extract every filled-in field as a pair.
 ${RULES}
@@ -201,7 +206,7 @@ ${table || "(none)"}`;
 
 async function run(split, variant) {
   const index = readJson(path.join(DIR, "images", split, "index.json"));
-  const outDir = path.join(DIR, "out", split, variant);
+  const outDir = path.join(DIR, OUTDIR, split, variant);
   fs.mkdirSync(outDir, { recursive: true });
   let done = 0;
   await Promise.all(index.map(async (it) => {
@@ -214,19 +219,21 @@ async function run(split, variant) {
 
 // ------------------------------------------------------------ score
 function systems(rec, settings) {
-  const R = rec.readers, V = rec.verifiers;
+  const use = settings.readers || MODELS.map(short);
+  const all = rec.readers, V = rec.verifiers;
+  const R = all.filter((r) => use.includes(short(r.model)));
   const sys = {};
-  for (const m of MODELS) sys[`single ${short(m)}`] = R.find((r) => r.model === m && r.view === "orig").fields || [];
+  for (const m of MODELS) sys[`single ${short(m)}`] = all.find((r) => r.model === m && r.view === "orig").fields || [];
   const lists = [...R.map((r) => r.fields || []), ...V.map((x) => x.fields || [])];
-  sys["swarm, vote only (8 readers)"] = merge(R.map((r) => r.fields || []), R.map(() => 1), settings.share).final;
-  sys["swarm (8 readers + 2 red team)"] = merge(lists, [...R.map(() => 1), ...V.map(() => settings.verifier_weight)], settings.share).final;
+  sys["swarm, vote only"] = merge(R.map((r) => r.fields || []), R.map(() => 1), settings.share).final;
+  sys["swarm (readers + red team)"] = merge(lists, [...R.map(() => 1), ...V.map(() => settings.verifier_weight)], settings.share).final;
   return sys;
 }
 function evaluate(split, variant, settings, only = null) {
   const index = readJson(path.join(DIR, "images", split, "index.json"));
   const res = {};
   for (const it of index) {
-    const f = path.join(DIR, "out", split, variant, it.doc + ".json");
+    const f = path.join(DIR, OUTDIR, split, variant, it.doc + ".json");
     if (!fs.existsSync(f)) continue;
     const gold = readJson(path.join(DIR, "gold", split, it.doc + ".json"));
     for (const [name, pred] of Object.entries(systems(readJson(f), settings))) {
@@ -253,15 +260,16 @@ const pc = (x) => (100 * x).toFixed(1);
 
 function tune() {
   let best = null;
-  for (const share of [0.2, 0.3, 0.4, 0.5]) for (const verifier_weight of [1, 2, 3, 4]) {
-    const s = { share, verifier_weight };
-    const name = "swarm (8 readers + 2 red team)";
+  const sets = [MODELS.map(short), ["hydrogen", "neon"], ["hydrogen", "neon", "argon"]];
+  for (const readers of sets) for (const share of [0.3, 0.4, 0.5]) for (const verifier_weight of [0, 1, 2]) {
+    const s = { share, verifier_weight, readers };
+    const name = "swarm (readers + red team)";
     const f1 = ["clean", "messy"].map((v) => micro(evaluate("dev", v, s, [name])[name] || []).f1);
     const mean = (f1[0] + f1[1]) / 2;
-    console.log(`share ${share} verifier_weight ${verifier_weight}: dev F1 clean ${pc(f1[0])} messy ${pc(f1[1])}`);
-    if (!best || mean > best.mean) best = { ...s, mean };
+    console.log(`readers ${readers.join("+")} share ${share} verifier_weight ${verifier_weight}: dev F1 clean ${pc(f1[0])} messy ${pc(f1[1])}`);
+    if (!best || mean > best.mean + 1e-9) best = { ...s, mean };
   }
-  const settings = { share: best.share, verifier_weight: best.verifier_weight, chosen_on: "dev (20 forms from FUNSD training set), mean F1 of clean and messy", frozen_at: new Date().toISOString() };
+  const settings = { prompt: TAG, readers: best.readers, share: best.share, verifier_weight: best.verifier_weight, chosen_on: "dev (20 forms from FUNSD training set), mean F1 of clean and messy", frozen_at: new Date().toISOString() };
   fs.writeFileSync(path.join(HERE, "settings.json"), JSON.stringify(settings, null, 2));
   console.log("frozen:", JSON.stringify(settings));
 }
@@ -277,7 +285,7 @@ function report(split) {
     lines.push(`### ${variant === "clean" ? "Original scans" : "Degraded copies (rotated 90°/180°, skewed + blurred, half resolution + heavy JPEG, dim + tilted)"}`, "", "| System | Precision | Recall | F1 | Exact-match F1 | Fields found / predicted / in the annotations |", "|---|---|---|---|---|---|");
     for (const n of names) { const m = micro(res[n]); lines.push(`| ${n} | ${pc(m.p)} | ${pc(m.r)} | **${pc(m.f1)}** | ${pc(m.exact_f1)} | ${m.tp} / ${m.pred} / ${m.gold} |`); }
     const singles = names.filter((n) => n.startsWith("single")).map((n) => [n, micro(res[n]).f1]).sort((a, b) => b[1] - a[1]);
-    const sw = "swarm (8 readers + 2 red team)";
+    const sw = "swarm (readers + red team)";
     if (res[sw] && singles.length) {
       const [bn] = singles[0];
       const b = bootstrap(res[sw], res[bn]);
@@ -285,6 +293,11 @@ function report(split) {
       const better = res[sw].filter((r, i) => prf(r.tp, r.pred, r.gold).f1 > prf(res[bn][i].tp, res[bn][i].pred, res[bn][i].gold).f1 + 1e-9).length;
       const worse = res[sw].filter((r, i) => prf(r.tp, r.pred, r.gold).f1 < prf(res[bn][i].tp, res[bn][i].pred, res[bn][i].gold).f1 - 1e-9).length;
       lines.push("", `Swarm vs the best single call (${bn}): ${d >= 0 ? "+" : ""}${pc(d)} F1 points, 95% interval ${pc(b.lo)} to ${pc(b.hi)} (paired bootstrap over forms; ${(d / b.sd).toFixed(1)} standard errors). Better on ${better} forms, worse on ${worse}, of ${res[sw].length}.`, "");
+      const f1s = (rows) => rows.map((r) => prf(r.tp, r.pred, r.gold).f1).sort((x, y) => x - y);
+      const q = (a, p) => a[Math.min(a.length - 1, Math.floor(p * a.length))];
+      lines.push("| Per-form F1 | Worst form | 10th percentile | Median | Forms under 30 |", "|---|---|---|---|---|");
+      for (const n of [bn, sw]) { const a = f1s(res[n]); lines.push(`| ${n} | ${pc(a[0])} | ${pc(q(a, 0.1))} | ${pc(q(a, 0.5))} | ${a.filter((x) => x < 0.3).length} |`); }
+      lines.push("");
       if (variant === "messy") {
         lines.push("| Degradation | Forms | Best single F1 | Swarm F1 |", "|---|---|---|---|");
         for (const k of KINDS) { const a = res[bn].filter((r) => r.kind === k), s = res[sw].filter((r) => r.kind === k); if (a.length) lines.push(`| ${k} | ${a.length} | ${pc(micro(a).f1)} | ${pc(micro(s).f1)} |`); }
@@ -293,7 +306,7 @@ function report(split) {
     }
   }
   const md = lines.join("\n");
-  fs.writeFileSync(path.join(HERE, `results-${split}.md`), `Settings: a field is kept when readers holding at least ${settings.share * 100}% of the vote report it; a red-team verifier's vote counts ${settings.verifier_weight}x. A predicted pair counts when its label is at least ${KEY_SIM * 100}% similar and its value at least ${VALUE_SIM * 100}% similar to an annotated pair (normalised edit distance, case and punctuation ignored).\n\n${md}\n`);
+  fs.writeFileSync(path.join(HERE, `results-${split}.md`), `Settings: a field is kept when readers holding at least ${settings.share * 100}% of the vote report it; readers: ${(settings.readers || []).join(", ")} (each on the original and an enhanced view); a red-team verifier's vote counts ${settings.verifier_weight}x (0 = not used); prompt ${settings.prompt}. A predicted pair counts when its label is at least ${KEY_SIM * 100}% similar and its value at least ${VALUE_SIM * 100}% similar to an annotated pair (normalised edit distance, case and punctuation ignored).\n\n${md}\n`);
   console.log(md);
 }
 
