@@ -1,4 +1,4 @@
-Settings: a field is kept when readers holding at least 50% of the vote report it; a red-team verifier's vote counts 1x. A predicted pair counts when its label is at least 70% similar and its value at least 80% similar to an annotated pair (normalised edit distance, case and punctuation ignored).
+Settings: a field is kept when readers holding at least 30% of the vote report it; readers: hydrogen, neon, carbon, argon (each on the original and an enhanced view); a red-team verifier's vote counts 0x (0 = not used); prompt v2. A predicted pair counts when its label is at least 70% similar and its value at least 80% similar to an annotated pair (normalised edit distance, case and punctuation ignored).
 
 ## Dev: 20 forms from FUNSD's training set
 
@@ -6,33 +6,43 @@ Settings: a field is kept when readers holding at least 50% of the vote report i
 
 | System | Precision | Recall | F1 | Exact-match F1 | Fields found / predicted / in the annotations |
 |---|---|---|---|---|---|
-| single hydrogen | 54.5 | 53.8 | **54.2** | 48.7 | 189 / 347 / 351 |
-| single neon | 40.7 | 55.6 | **47.0** | 42.7 | 195 / 479 / 351 |
-| single carbon | 38.4 | 48.4 | **42.8** | 37.8 | 170 / 443 / 351 |
-| single argon | 41.5 | 55.3 | **47.4** | 42.5 | 194 / 468 / 351 |
-| swarm, vote only (8 readers) | 57.5 | 52.4 | **54.8** | 49.2 | 184 / 320 / 351 |
-| swarm (8 readers + 2 red team) | 47.8 | 52.7 | **50.1** | 44.7 | 185 / 387 / 351 |
+| single hydrogen | 71.5 | 65.0 | **68.1** | 61.5 | 228 / 319 / 351 |
+| single neon | 72.3 | 66.1 | **69.0** | 62.2 | 232 / 321 / 351 |
+| single carbon | 72.9 | 66.7 | **69.6** | 62.2 | 234 / 321 / 351 |
+| single argon | 72.7 | 67.5 | **70.0** | 63.2 | 237 / 326 / 351 |
+| swarm, vote only | 71.8 | 65.2 | **68.4** | 60.0 | 229 / 319 / 351 |
+| swarm (readers + red team) | 71.8 | 65.2 | **68.4** | 60.0 | 229 / 319 / 351 |
 
-Swarm vs the best single call (single hydrogen): -4.0 F1 points, 95% interval -14.8 to 7.9 (paired bootstrap over forms; -0.7 standard errors). Better on 3 forms, worse on 6, of 20.
+Swarm vs the best single call (single argon): -1.7 F1 points, 95% interval -3.4 to 0.3 (paired bootstrap over forms; -1.8 standard errors). Better on 5 forms, worse on 7, of 20.
+
+| Per-form F1 | Worst form | 10th percentile | Median | Forms under 30 |
+|---|---|---|---|---|
+| single argon | 0.0 | 33.3 | 70.0 | 2 |
+| swarm (readers + red team) | 0.0 | 31.7 | 63.2 | 2 |
 
 ### Degraded copies (rotated 90°/180°, skewed + blurred, half resolution + heavy JPEG, dim + tilted)
 
 | System | Precision | Recall | F1 | Exact-match F1 | Fields found / predicted / in the annotations |
 |---|---|---|---|---|---|
-| single hydrogen | 54.7 | 53.6 | **54.1** | 46.6 | 188 / 344 / 351 |
-| single neon | 53.3 | 55.6 | **54.4** | 47.1 | 195 / 366 / 351 |
-| single carbon | 36.0 | 51.0 | **42.2** | 34.7 | 179 / 497 / 351 |
-| single argon | 37.9 | 51.0 | **43.5** | 36.7 | 179 / 472 / 351 |
-| swarm, vote only (8 readers) | 42.8 | 51.3 | **46.6** | 39.9 | 180 / 421 / 351 |
-| swarm (8 readers + 2 red team) | 46.4 | 51.0 | **48.6** | 41.5 | 179 / 386 / 351 |
+| single hydrogen | 69.4 | 62.7 | **65.9** | 55.7 | 220 / 317 / 351 |
+| single neon | 69.3 | 63.5 | **66.3** | 58.5 | 223 / 322 / 351 |
+| single carbon | 74.3 | 62.7 | **68.0** | 58.1 | 220 / 296 / 351 |
+| single argon | 72.2 | 65.2 | **68.6** | 58.1 | 229 / 317 / 351 |
+| swarm, vote only | 68.9 | 63.2 | **66.0** | 56.2 | 222 / 322 / 351 |
+| swarm (readers + red team) | 68.9 | 63.2 | **66.0** | 56.2 | 222 / 322 / 351 |
 
-Swarm vs the best single call (single neon): -5.8 F1 points, 95% interval -13.8 to 2.4 (paired bootstrap over forms; -1.3 standard errors). Better on 3 forms, worse on 5, of 20.
+Swarm vs the best single call (single argon): -2.6 F1 points, 95% interval -5.6 to 0.6 (paired bootstrap over forms; -1.6 standard errors). Better on 4 forms, worse on 12, of 20.
+
+| Per-form F1 | Worst form | 10th percentile | Median | Forms under 30 |
+|---|---|---|---|---|
+| single argon | 0.0 | 26.7 | 70.0 | 3 |
+| swarm (readers + red team) | 0.0 | 22.2 | 65.0 | 3 |
 
 | Degradation | Forms | Best single F1 | Swarm F1 |
 |---|---|---|---|
-| rot90 | 4 | 41.1 | 48.9 |
-| rot180 | 4 | 51.5 | 50.2 |
-| skew | 4 | 64.9 | 64.9 |
-| lowres | 4 | 59.2 | 42.4 |
-| dim | 4 | 57.8 | 48.3 |
+| rot90 | 4 | 87.6 | 83.1 |
+| rot180 | 4 | 78.1 | 71.0 |
+| skew | 4 | 61.5 | 64.1 |
+| lowres | 4 | 56.9 | 58.4 |
+| dim | 4 | 58.4 | 55.6 |
 
