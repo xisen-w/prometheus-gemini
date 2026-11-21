@@ -1,0 +1,9 @@
+[
+  {"kind": "main", "question": "Analysis for Gemini-4 models in comparison with latest Claude models", "expect": null},
+  {"kind": "baseline-run", "question": "What are the Gemini 4 models (Argon, Carbon, Neon, Hydrogen) that Google released in Oct–Nov 2026, what is each one for, and how do they compare with each other and with the strongest competing models on published benchmarks and price?", "expect": null},
+  {"kind": "false premise", "question": "Why did the European Union ban all AI chatbots in 2026, and which companies were affected?", "expect": "Say clearly that the premise is false (the EU did not ban all AI chatbots), then explain what the EU actually did, e.g. the AI Act obligations, rather than inventing a ban or affected companies."},
+  {"kind": "messy input", "question": "whats teh current us fed funds rate n when did they last change it?? also whos likely next chair", "expect": "Give the current federal funds target range with the date of the last change, and address who is likely to be the next Fed chair with appropriate uncertainty."},
+  {"kind": "non-English", "question": "2026年中国新能源汽车出口了多少辆？主要出口到哪些国家？和2025年比怎么样？", "expect": "Answer in Chinese, give export figures with their period and source (noting 2026 may be partial-year data), name the main destination countries, and compare with 2025."},
+  {"kind": "broad / contested", "question": "Is drinking coffee every day good or bad for long-term health?", "expect": "Present the weight of evidence (observational vs trial evidence), the main benefits and risks, who should be careful (e.g. pregnancy), and avoid overclaiming causation."},
+  {"kind": "probably unanswerable", "question": "Which team won first place at the Gemini 4 NYC Hackathon on November 21, 2026, and what did they build?", "expect": "Say that the winner is not publicly reported (the event is on the same day), without naming or inventing a winner."}
+]

@@ -171,9 +171,10 @@ async function showAsk() {
       </div>
       <div class="opts" id="optsgrid" hidden>
         <div class="grid">
-          ${range('researchers', 'Researchers', 2, 8, 1, 6)}
-          ${range('redteam', 'Red team', 1, 3, 1, 2)}
-          ${range('minutes', 'Minutes', 10, 60, 5, 30)}
+          <fieldset class="agents"><legend class="lab"><span>Agents</span><span class="v" data-v="split">13 researchers · 3 red team</span></legend>
+            <div class="seg">${[8, 16, 32, 64, 128].map((n) => `<label><input type="radio" name="agents" value="${n}"${n === 16 ? ' checked' : ''}><span>${n}</span></label>`).join('')}</div>
+          </fieldset>
+          ${range('minutes', 'Minutes', 10, 120, 5, 30)}
           <label class="check"><input type="checkbox" name="baseline" checked> Compare with Google Deep Research</label>
         </div>
       </div>
@@ -185,12 +186,21 @@ async function showAsk() {
   const ot = $('.opts-toggle', f);
   ot.addEventListener('click', () => { const g = $('#optsgrid'); g.hidden = !g.hidden; ot.setAttribute('aria-expanded', String(!g.hidden)); });
   $$('input[type=range]', f).forEach((r) => r.addEventListener('input', () => { $(`[data-v="${r.name}"]`, f).textContent = r.value; }));
+  const split = () => {
+    const n = +f.agents.value, x = Math.max(1, Math.round(n / 5)), r = n - x, b = Math.max(1, Math.round(r / 12));
+    $('[data-v="split"]', f).textContent = `${r} researchers · ${x} red team${b > 1 ? ` · ${b} branches` : ''}`;
+    const m = f.minutes; const want = n >= 128 ? 60 : n >= 64 ? 45 : 30;
+    if (!m.dataset.touched) { m.value = want; $('[data-v="minutes"]', f).textContent = want; }
+  };
+  f.minutes.addEventListener('input', () => { f.minutes.dataset.touched = '1'; });
+  $$('input[name=agents]', f).forEach((r) => r.addEventListener('change', split));
+  split();
   f.question.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); f.requestSubmit(); } });
   f.question.focus();
   f.addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = $('button[type=submit]', f);
-    const body = { question: f.question.value.trim(), researchers: +f.researchers.value, redteam: +f.redteam.value, minutes: +f.minutes.value, baseline: f.baseline.checked };
+    const body = { question: f.question.value.trim(), agents: +f.agents.value, minutes: +f.minutes.value, baseline: f.baseline.checked };
     if (body.question.length < 8) { $('#err').textContent = 'A little longer, please.'; return; }
     btn.disabled = true; btn.textContent = 'Starting';
     try {

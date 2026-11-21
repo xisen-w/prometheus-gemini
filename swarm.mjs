@@ -14,6 +14,10 @@ const BASELINE_AGENT = process.env.SWARM_BASELINE || "deep-research-max-preview-
 const MOCK = process.env.MOCK === "1";
 const TURN_TIMEOUT_MS = Number(process.env.SWARM_TURN_TIMEOUT_MS || 12 * 60_000);
 
+// claim tags: [C1-2] or [C1-2, C3-4]
+const TAG_RE = /\[((?:C\d+-\d+)(?:\s*[,;]\s*C\d+-\d+)*)\]/g;
+const tagsIn = (text) => [...new Set([...String(text).matchAll(TAG_RE)].flatMap((m) => m[1].split(/\s*[,;]\s*/)))];
+const stripTags = (text) => String(text).replace(/\s*\[(?:C\d+-\d+)(?:\s*[,;]\s*C\d+-\d+)*\]/g, "");
 const now = () => new Date().toISOString().replace(/\.\d+Z$/, "Z");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -231,6 +235,7 @@ function blocks(text, lang) {
   return out.join("\n");
 }
 
+let renameN = 0;
 const TYPES = new Set(["question", "claim", "source", "answer", "not_found", "check", "challenge", "resolution"]);
 function parseLedger(seat, text) {
   const raw = blocks(text, "ledger") || blocks(text, "jsonl");
@@ -242,12 +247,18 @@ function parseLedger(seat, text) {
     let r;
     try { r = JSON.parse(line); } catch { rejected.push({ row: line.slice(0, 200), why: "not valid JSON" }); continue; }
     if (!r || !TYPES.has(r.type)) { rejected.push({ row: r, why: "unknown type" }); continue; }
+    // a cross-checker that reuses someone else's source id gets a fresh id of its own instead of a rejection
+    if (r.type === "source" && r.id && !own.some((p) => r.id.startsWith(p)) && r.status !== "dropped") {
+      r.renamed_from = r.id;
+      r.id = `${own[1]}x${++renameN}`;
+    }
     if (r.id && ["claim", "source", "question", "challenge"].includes(r.type) && !own.some((p) => r.id.startsWith(p))) {
       rejected.push({ row: r, why: `id must start with ${own.join(" or ")}` });
       continue;
     }
-    if (r.type === "source" && !/^https?:\/\//.test(r.url || "")) { rejected.push({ row: r, why: "source needs an http(s) url" }); continue; }
-    if (r.type === "source" && !(r.quote || "").trim()) { rejected.push({ row: r, why: "source needs an exact quote" }); continue; }
+    const dropping = r.status === "dropped";
+    if (r.type === "source" && !dropping && !/^https?:\/\//.test(r.url || "")) { rejected.push({ row: r, why: "source needs an http(s) url" }); continue; }
+    if (r.type === "source" && !dropping && !(r.quote || "").trim()) { rejected.push({ row: r, why: "source needs an exact quote" }); continue; }
     r.by = seat.id;
     r.at = now();
     rows.push(r);
@@ -610,8 +621,8 @@ async function writeSections(run, judgeNotes) {
         run.totals.tokens += res.tokens;
         const md = res.text.trim();
         const first = md.split("\n").filter((l) => l.trim() && !l.startsWith("#"))[0] || "";
-        const claims = [...new Set((md.match(/\[C\d+-\d+\]/g) || []).map((t) => t.slice(1, -1)))];
-        run.addRows("W", [{ type: "answer", question: b.id, status: "answered", text: first.replace(/\s*\[C\d+-\d+\]/g, "").slice(0, 600), claims, by: "W", at: now() }]);
+        const claims = tagsIn(md);
+        run.addRows("W", [{ type: "answer", question: b.id, status: "answered", text: stripTags(first).slice(0, 600), claims, by: "W", at: now() }]);
         return md;
       } catch (e) {
         return `## ${b.title}\n\n(section writer failed: ${String(e.message).slice(0, 120)})`;
@@ -672,7 +683,7 @@ Cite only ids present in the sections or the compact ledger. Never invent facts.
 async function judge(run, attempt, report) {
   run.emit({ t: "phase", name: "judge", round: attempt });
   const v = run.view();
-  const tags = [...new Set((report.match(/\[C\d+-\d+\]/g) || []).map((t) => t.slice(1, -1)))];
+  const tags = tagsIn(report);
   const bad = tags.filter((t) => !v.claims.has(t) || !v.kept(v.claims.get(t)));
   const uncited = v.keyClaims.filter((c) => !tags.includes(c.id)).map((c) => c.id);
   const sys = `You are an independent, strict judge of a deep-research report. Check: does it answer the user's question directly; is every key statement tagged with a ledger claim id and supported by that claim's sources and quotes; does it address the strongest contradicting evidence; does it say what was searched but not found; does it state confidence with reasons; are single-source numbers disclosed; anything shallow, stale, or overstated? Return ONLY JSON {"pass":true|false,"problems":["..."]}.`;
@@ -704,7 +715,8 @@ async function baseline(run) {
       return;
     }
     let it = await gem().interactions.create({ agent: BASELINE_AGENT, input: run.req.question, background: true, store: true });
-    it = await waitFor(it, 40 * 60_000);
+    run.emit({ t: "baseline", status: "submitted", agent: BASELINE_AGENT, interaction_id: it.id });
+    it = await waitFor(it, 60 * 60_000);
     const d = digestSteps(it);
     fs.writeFileSync(path.join(run.dir, "baseline.md"), outputText(it).trim() + "\n");
     run.emit({ t: "baseline", status: "completed", agent: BASELINE_AGENT, interaction_id: it.id, ...d, ms: Date.now() - t0 });
@@ -753,6 +765,9 @@ async function main() {
   const i = process.argv.indexOf("--run");
   if (i < 0) throw new Error("usage: node swarm.mjs --run <runId>");
   const run = new Run(process.argv[i + 1]);
+  const from = process.argv.includes("--from") ? process.argv[process.argv.indexOf("--from") + 1] : null;
+  if (from === "write") return resumeAtWrite(run);
+  if (from === "baseline") { run.req.baseline = true; return baseline(run); }
   // team size: `agents` = researchers + red team (8..128); older requests give the two counts
   let R, X;
   if (run.req.agents) {
@@ -799,6 +814,36 @@ async function main() {
     status = "failed";
   }
   await Promise.race([base, sleep(Math.max(0, run.deadline + 10 * 60_000 - Date.now()))]);
+  run.emit({ t: "phase", name: "done", round: 1 });
+  run.emit({ t: "done", status, totals: { ...run.totals, minutes: Math.round((Date.now() - run.started) / 6000) / 10 } });
+}
+
+// finish a run whose research already passed the gate (e.g. the process was killed while writing)
+async function resumeAtWrite(run) {
+  const evs = fs.readFileSync(path.join(run.dir, "events.ndjson"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const first = evs.find((e) => e.t === "run");
+  run.started = Date.parse(first.started_at);
+  run.deadline = Date.now() + 15 * 60_000;
+  run.seats = first.seats;
+  const B = first.branches || 1;
+  run.branches = Array.from({ length: B }, (_, i) => ({ id: `B${i + 1}`, title: "", scope: "" }));
+  run.rows = fs.readFileSync(path.join(run.dir, "ledger.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  for (const r of run.rows) if (r.type === "question" && /^B\d+$/.test(r.id)) { const b = run.branches.find((x) => x.id === r.id); if (b) { const [t, ...rest] = r.text.split(": "); b.title = t; b.scope = rest.join(": "); } }
+  for (const e of evs) {
+    if (e.t === "msg") run.room.push({ seat: e.seat, text: e.text, at: e.at });
+    if (e.t === "turn" && e.status === "completed") { run.totals.tokens += e.tokens || 0; run.totals.searches += (e.searches || []).length; run.totals.urls_opened += (e.urls || []).length; run.totals.turns += 1; }
+  }
+  const gates = evs.filter((e) => e.t === "gate");
+  const gatePassed = gates.length && gates[gates.length - 1].pass;
+  run.say("system", "Resumed at the writing step (the earlier process stopped while writing).");
+  let status = "ended";
+  let report = await write(run);
+  for (let attempt = 1; report && attempt <= 2; attempt++) {
+    const j = await judge(run, attempt, report);
+    if (j.pass) { status = gatePassed ? "passed" : "ended"; break; }
+    if (attempt === 2) break;
+    report = await write(run, j.notes);
+  }
   run.emit({ t: "phase", name: "done", round: 1 });
   run.emit({ t: "done", status, totals: { ...run.totals, minutes: Math.round((Date.now() - run.started) / 6000) / 10 } });
 }

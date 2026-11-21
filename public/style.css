@@ -362,3 +362,14 @@ details.answers[open] > summary::before { content: "\2212"; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* agent-count choice */
+fieldset.agents { border: 0; padding: 0; margin: 0; min-width: 0; }
+fieldset.agents legend { width: 100%; padding: 0; }
+.seg { display: flex; margin-top: 8px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; width: max-content; max-width: 100%; }
+.seg label { margin: 0; cursor: pointer; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg span { display: block; padding: 6px 14px; font-family: var(--mono); font-size: 13px; border-left: 1px solid var(--line); }
+.seg label:first-child span { border-left: 0; }
+.seg input:checked + span { background: var(--fg); color: var(--bg); }
+.seg input:focus-visible + span { outline: 2px solid currentColor; outline-offset: -3px; }

@@ -63,9 +63,10 @@ function startRun(body) {
   fs.mkdirSync(dir, { recursive: true });
   const req = {
     question: q.slice(0, 4000),
+    ...(body.agents ? { agents: Math.max(4, Math.min(128, Number(body.agents) || 16)) } : {}),
     researchers: Math.max(2, Math.min(8, Number(body.researchers) || 6)),
     redteam: Math.max(1, Math.min(3, Number(body.redteam) || 2)),
-    minutes: Math.max(5, Math.min(90, Number(body.minutes) || 30)),
+    minutes: Math.max(5, Math.min(120, Number(body.minutes) || 30)),
     baseline: body.baseline !== false,
     created_at: d.toISOString(),
   };
