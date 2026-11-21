@@ -346,26 +346,65 @@ async function seatTurn(run, seat, phase, input) {
   }
 }
 
+async function planCall(prompt, sys) {
+  const res = await modelCall(prompt, sys);
+  return { res, json: JSON.parse((res.text.match(/\{[\s\S]*\}/) || ["{}"])[0]) };
+}
+
 async function plan(run) {
   run.emit({ t: "phase", name: "plan", round: 1 });
   const researchers = run.seats.filter((s) => s.role === "researcher");
-  const k = researchers.length;
-  const sys = `You plan deep research. Split the user's question into the sub-questions a careful analyst must answer to give a trustworthy answer: definitions and scope, the key facts and numbers, how they are measured, the strongest counter-evidence, and what could change the answer. Return ONLY JSON: {"questions":[{"id":"Q0-1","text":"...","parent":null}, ...]} with ${Math.max(k + 2, 6)}-${Math.max(2 * k, 10)} questions; children use "parent". Write the questions in the language of the user's question.`;
-  let qs = [];
-  try {
-    const res = await modelCall(`User question (today is ${today()}):\n${run.req.question}`, sys);
-    run.totals.tokens += res.tokens;
-    const json = (res.text.match(/\{[\s\S]*\}/) || ["{}"])[0];
-    qs = JSON.parse(json).questions || [];
-  } catch (e) {
-    run.say("system", `Planner failed (${String(e.message).slice(0, 120)}); researchers will split the question themselves.`);
+  const B = run.branches.length;
+  const lang = "Write in the language of the user's question.";
+  let rows = [];
+  if (B === 1) {
+    const k = researchers.length;
+    const sys = `You plan deep research. Split the user's question into the sub-questions a careful analyst must answer to give a trustworthy answer: definitions and scope, the key facts and numbers, how they are measured, the strongest counter-evidence, and what could change the answer. Return ONLY JSON: {"questions":[{"id":"Q0-1","text":"...","parent":null}, ...]} with ${Math.max(k + 2, 6)}-${Math.max(2 * k, 10)} questions; children use "parent". ${lang}`;
+    try {
+      const { res, json } = await planCall(`User question (today is ${today()}):\n${run.req.question}`, sys);
+      run.totals.tokens += res.tokens;
+      rows = (json.questions || []).map((q, i) => ({ type: "question", id: q.id || `Q0-${i + 1}`, text: q.text, parent: q.parent || null, branch: "B1" }));
+    } catch (e) {
+      run.say("system", `Planner failed (${String(e.message).slice(0, 120)}); researchers will split the question themselves.`);
+    }
+    if (!rows.length) rows = [{ type: "question", id: "Q0-1", text: run.req.question, parent: null, branch: "B1" }];
+    rows.forEach((q, i) => (q.owner = researchers[i % k].id));
+  } else {
+    const sys1 = `You are the lead planner of a ${run.seats.length}-agent deep-research team. Split the user's question into exactly ${B} branches that together cover everything a careful analyst must establish (scope and definitions, the key facts and numbers, how they are measured, causes, comparisons, the strongest counter-evidence, what could change the answer). Branches must not overlap. Return ONLY JSON: {"branches":[{"title":"short title","scope":"one or two sentences: what this branch must establish"}]}. ${lang}`;
+    let branches = [];
+    try {
+      const { res, json } = await planCall(`User question (today is ${today()}):\n${run.req.question}`, sys1);
+      run.totals.tokens += res.tokens;
+      branches = (json.branches || []).slice(0, B);
+    } catch (e) {
+      run.say("system", `Lead planner failed (${String(e.message).slice(0, 120)}).`);
+    }
+    while (branches.length < B) branches.push({ title: `Part ${branches.length + 1}`, scope: run.req.question });
+    run.branches.forEach((b, i) => Object.assign(b, { title: branches[i].title, scope: branches[i].scope }));
+    const top = run.branches.map((b) => ({ type: "question", id: b.id, text: `${b.title}: ${b.scope}`, parent: null, branch: b.id, owner: "P", by: "P", at: now() }));
+    run.addRows("P", top);
+    run.say("P", `${B} branches: ${run.branches.map((b) => `${b.id} ${b.title}`).join(" · ")}`);
+    const subs = await Promise.all(
+      run.branches.map(async (b) => {
+        const team = researchers.filter((r) => r.branch === b.id);
+        const n = team.length;
+        const sys2 = `You plan one branch of a deep-research project. Split the branch into ${n + 2}-${2 * n} concrete, researchable sub-questions (facts, numbers, how they are measured, counter-evidence, what could change). Return ONLY JSON: {"questions":[{"text":"..."}]}. ${lang}`;
+        let qs = [];
+        try {
+          const { res, json } = await planCall(`User question: ${run.req.question}\nToday: ${today()}\nAll branches:\n${run.branches.map((x) => `- ${x.id} ${x.title}: ${x.scope}`).join("\n")}\n\nYOUR BRANCH: ${b.id} ${b.title}: ${b.scope}`, sys2);
+          run.totals.tokens += res.tokens;
+          qs = json.questions || [];
+        } catch {}
+        if (!qs.length) qs = [{ text: `${b.title}: ${b.scope}` }];
+        return qs.map((q, i) => ({ type: "question", id: `Q0-${b.id.slice(1)}-${i + 1}`, text: q.text, parent: b.id, branch: b.id, owner: team[i % n].id }));
+      }),
+    );
+    rows = subs.flat();
   }
-  if (!qs.length) qs = [{ id: "Q0-1", text: run.req.question, parent: null }];
-  const rows = qs.map((q, i) => ({ type: "question", id: q.id || `Q0-${i + 1}`, text: q.text, parent: q.parent || null, owner: researchers[i % k].id, by: "P", at: now() }));
-  run.addRows("P", rows);
+  run.addRows("P", rows.map((r) => ({ ...r, by: "P", at: now() })));
   for (const r of researchers) {
     const mine = rows.filter((q) => q.owner === r.id).map((q) => q.id);
-    run.say("P", `@${r.id} yours: ${mine.join(", ")}`);
+    if (mine.length) run.say("P", `@${r.id} yours: ${mine.join(", ")}`);
   }
 }
 
@@ -394,8 +433,10 @@ async function crosscheck(run) {
   run.emit({ t: "phase", name: "crosscheck", round: 1 });
   const researchers = run.seats.filter((s) => s.role === "researcher");
   const v = run.view();
-  const tasks = researchers.map((seat, i) => {
-    const other = researchers[(i + 1) % researchers.length];
+  const tasks = researchers.map((seat) => {
+    const mates = researchers.filter((r) => r.branch === seat.branch);
+    const pool = mates.length > 1 ? mates : researchers;
+    const other = pool[(pool.indexOf(seat) + 1) % pool.length];
     if (other === seat) return null;
     const theirs = v.keyClaims.filter((c) => c.by === other.id).map((c) => c.id);
     if (!theirs.length) return null;
@@ -413,11 +454,13 @@ async function redteam(run, round, gateProblems = []) {
   run.emit({ t: "phase", name: "redteam", round });
   const reds = run.seats.filter((s) => s.role === "redteam");
   const v = run.view();
-  const keys = v.keyClaims.map((c) => c.id);
+  const order = new Map(run.seats.map((s, i) => [s.id, i]));
+  const keys = v.keyClaims.slice().sort((a, b) => (order.get(a.by) ?? 0) - (order.get(b.by) ?? 0)).map((c) => c.id);
   const unchecked = keys.filter((cid) => !v.sourcesOf(cid).some((s) => v.checksOf(s.id).some((k) => k.result === "confirmed")));
   const targets = round === 1 ? keys : unchecked.length ? unchecked : keys;
   const tasks = reds.map((seat, i) => {
-    const mine = targets.filter((_, j) => j % reds.length === i);
+    const per = Math.ceil(targets.length / reds.length);
+    const mine = targets.slice(i * per, (i + 1) * per);
     const unanswered = [...v.questions.values()].filter((q) => !v.answers.has(q.id)).map((q) => `${q.id}: ${q.text}`);
     const input = `${roomFor(run, seat)}
 
@@ -504,7 +547,7 @@ async function gate(run, attempt) {
   run.emit({ t: "phase", name: "gate", round: attempt });
   const v = run.view();
   const problems = [];
-  for (const q of v.questions.values()) if (!v.answers.has(q.id)) problems.push(`${q.id} has no answer (${q.owner || q.by})`);
+  for (const q of v.questions.values()) if (q.owner !== "P" && !v.answers.has(q.id)) problems.push(`${q.id} has no answer (${q.owner || q.by})`);
   if (!v.keyClaims.length) problems.push("no key claims in the ledger");
   let confirmed = 0;
   for (const c of v.keyClaims) {
@@ -519,7 +562,7 @@ async function gate(run, attempt) {
   for (const x of v.openChallenges) problems.push(`challenge ${x.id} on ${x.claim} is unresolved (${x.to || v.claims.get(x.claim)?.by || "?"})`);
   // quote spot-check on a sample of key-claim sources
   const pool = v.keyClaims.flatMap((c) => v.sourcesOf(c.id).filter((s) => s.stance !== "contradicts"));
-  const sample = pool.sort(() => Math.random() - 0.5).slice(0, Math.min(8, pool.length));
+  const sample = pool.sort(() => Math.random() - 0.5).slice(0, Math.min(8 + Math.floor(run.seats.length / 8), pool.length));
   const results = await Promise.all(sample.map(async (s) => [s, MOCK ? "found" : await quoteOnPage(s.url, s.quote)]));
   let found = 0, reached = 0;
   for (const [s, r] of results) {
@@ -534,20 +577,53 @@ async function gate(run, attempt) {
 }
 
 // ---------------------------------------------------------------- writer + judge
-function ledgerDigest(run) {
+function ledgerDigest(run, { branch = null, compact = false } = {}) {
   const v = run.view();
-  const qs = [...v.questions.values()].map((q) => {
+  const seatBranch = new Map(run.seats.map((s) => [s.id, s.branch]));
+  const inBranch = (by) => !branch || seatBranch.get(by) === branch;
+  const qs = [...v.questions.values()].filter((q) => !branch || q.branch === branch || q.id === branch).map((q) => {
     const a = v.answers.get(q.id);
     return `- ${q.id}${q.parent ? ` (under ${q.parent})` : ""}: ${q.text}\n  answer: ${a ? `[${a.status}] ${a.text} (claims ${(a.claims || []).join(", ")})` : "NONE"}`;
   });
-  const claims = [...v.claims.values()].filter(v.kept).map((c) => c.id);
-  const nf = v.notFound.map((r) => `- ${r.text} (searched: ${r.searched || "?"})`);
-  const ch = [...v.challenges.values()].map((x) => `- ${x.id} on ${x.claim}: ${x.text} -> ${v.resolutions.get(x.id)?.text || "UNRESOLVED"}`);
-  return `QUESTIONS AND ANSWERS\n${qs.join("\n")}\n\nCLAIMS WITH SOURCES AND CHECKS\n${claimDigest(run, claims)}\n\nSEARCHED, NOT FOUND\n${nf.join("\n") || "(none)"}\n\nRED-TEAM CHALLENGES\n${ch.join("\n") || "(none)"}`;
+  const claims = [...v.claims.values()].filter((c) => v.kept(c) && inBranch(c.by)).map((c) => c.id);
+  const nf = v.notFound.filter((r) => inBranch(r.by)).map((r) => `- ${r.text} (searched: ${r.searched || "?"})`);
+  const ch = [...v.challenges.values()].filter((x) => inBranch(v.claims.get(x.claim)?.by)).map((x) => `- ${x.id} on ${x.claim}: ${x.text} -> ${v.resolutions.get(x.id)?.text || "UNRESOLVED"}`);
+  const cd = compact
+    ? claims.map((cid) => {
+        const c = v.claims.get(cid);
+        const src = v.sourcesOf(cid);
+        const pubs = [...new Set(src.filter((x) => x.stance !== "contradicts").map((x) => x.publisher))].join("; ");
+        const contra = src.filter((x) => x.stance === "contradicts").length;
+        const conf = src.some((x) => v.checksOf(x.id).some((k) => k.result === "confirmed"));
+        return `- ${cid}${c.key ? " key" : ""}${c.single_source ? " single-source" : ""}: ${c.text} | publishers: ${pubs || "none"}${contra ? ` | ${contra} contradicting` : ""} | ${conf ? "confirmed" : "unconfirmed"}`;
+      }).join("\n")
+    : claimDigest(run, claims);
+  return `QUESTIONS AND ANSWERS\n${qs.join("\n")}\n\nCLAIMS WITH SOURCES AND CHECKS\n${cd}\n\nSEARCHED, NOT FOUND\n${nf.join("\n") || "(none)"}\n\nRED-TEAM CHALLENGES\n${ch.join("\n") || "(none)"}`;
+}
+
+async function writeSections(run, judgeNotes) {
+  const sys = `You write ONE section of a deep-research report from the evidence ledger of one research branch. Write in the language of the user's question. Start with a "## " heading (the branch title). Every sentence that states a ledger claim ends with its id in square brackets, like [C12-3]; cite only ids in this ledger, invent nothing. Link only URLs from the ledger. Name contradicting evidence and how it was weighed; say plainly when a key number rests on one publisher. Dense and concrete; no preamble.`;
+  const parts = await Promise.all(
+    run.branches.map(async (b) => {
+      try {
+        const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\nBRANCH ${b.id}: ${b.title}: ${b.scope}\n\n${ledgerDigest(run, { branch: b.id })}${judgeNotes ? `\n\nJUDGE NOTES ON THE LAST REPORT:\n${judgeNotes}` : ""}`, sys);
+        run.totals.tokens += res.tokens;
+        const md = res.text.trim();
+        const first = md.split("\n").filter((l) => l.trim() && !l.startsWith("#"))[0] || "";
+        const claims = [...new Set((md.match(/\[C\d+-\d+\]/g) || []).map((t) => t.slice(1, -1)))];
+        run.addRows("W", [{ type: "answer", question: b.id, status: "answered", text: first.replace(/\s*\[C\d+-\d+\]/g, "").slice(0, 600), claims, by: "W", at: now() }]);
+        return md;
+      } catch (e) {
+        return `## ${b.title}\n\n(section writer failed: ${String(e.message).slice(0, 120)})`;
+      }
+    }),
+  );
+  return parts;
 }
 
 async function write(run, judgeNotes = "") {
   run.emit({ t: "phase", name: "write", round: 1 });
+  if (run.branches.length > 1) return writeBig(run, judgeNotes);
   run.emit({ t: "turn", seat: "W", phase: "write", status: "started" });
   const t0 = Date.now();
   const sys = `You write the final deep-research report from an evidence ledger. Rules:
@@ -570,6 +646,29 @@ async function write(run, judgeNotes = "") {
   }
 }
 
+async function writeBig(run, judgeNotes) {
+  run.emit({ t: "turn", seat: "W", phase: "write", status: "started" });
+  const t0 = Date.now();
+  try {
+    const sections = await writeSections(run, judgeNotes);
+    const sys = `You are the lead writer of a deep-research report written by a ${run.seats.length}-agent team. The branch sections are already written. Write in the language of the user's question, and output exactly two parts separated by a line containing only =====SECTIONS=====:
+PART 1: a "# " title, then the direct answer in 3-6 sentences, citing claim ids like [C3-1] from the sections.
+PART 2: "## Strongest contradicting evidence" (how it was weighed), "## Searched, not found", and "## Confidence" (high / medium / low with reasons, what could change, which key numbers rest on one publisher).
+Cite only ids present in the sections or the compact ledger. Never invent facts.`;
+    const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\n\nSECTIONS:\n${sections.join("\n\n")}\n\nCOMPACT LEDGER:\n${ledgerDigest(run, { compact: true })}${judgeNotes ? `\n\nTHE JUDGE REFUSED THE LAST REPORT:\n${judgeNotes}` : ""}`, sys);
+    run.totals.tokens += res.tokens;
+    const [head, tail = ""] = res.text.split(/^=====SECTIONS=====\s*$/m);
+    const report = `${head.trim()}\n\n${sections.join("\n\n")}\n\n${tail.trim()}\n`;
+    fs.writeFileSync(path.join(run.dir, "report.md"), report);
+    run.emit({ t: "turn", seat: "W", phase: "write", status: "completed", interaction_id: res.id, searches: [], urls: [], tokens: res.tokens, ms: Date.now() - t0, error: null });
+    run.emit({ t: "report" });
+    return report;
+  } catch (e) {
+    run.emit({ t: "turn", seat: "W", phase: "write", status: "failed", ms: Date.now() - t0, error: String(e.message).slice(0, 400) });
+    return null;
+  }
+}
+
 async function judge(run, attempt, report) {
   run.emit({ t: "phase", name: "judge", round: attempt });
   const v = run.view();
@@ -579,7 +678,7 @@ async function judge(run, attempt, report) {
   const sys = `You are an independent, strict judge of a deep-research report. Check: does it answer the user's question directly; is every key statement tagged with a ledger claim id and supported by that claim's sources and quotes; does it address the strongest contradicting evidence; does it say what was searched but not found; does it state confidence with reasons; are single-source numbers disclosed; anything shallow, stale, or overstated? Return ONLY JSON {"pass":true|false,"problems":["..."]}.`;
   let pass = false, notes = "";
   try {
-    const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\n\nREPORT:\n${report}\n\nLEDGER:\n${ledgerDigest(run)}\n\nAutomatic checks: tags not in ledger: ${bad.join(", ") || "none"}; key claims not cited: ${uncited.join(", ") || "none"}.`, sys);
+    const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\n\nREPORT:\n${report}\n\nLEDGER:\n${ledgerDigest(run, { compact: run.seats.length > 24 })}\n\nAutomatic checks: tags not in ledger: ${bad.join(", ") || "none"}; key claims not cited: ${uncited.join(", ") || "none"}.`, sys);
     run.totals.tokens += res.tokens;
     const j = JSON.parse((res.text.match(/\{[\s\S]*\}/) || ["{}"])[0]);
     pass = !!j.pass && bad.length === 0;
@@ -654,16 +753,26 @@ async function main() {
   const i = process.argv.indexOf("--run");
   if (i < 0) throw new Error("usage: node swarm.mjs --run <runId>");
   const run = new Run(process.argv[i + 1]);
-  const R = Math.max(2, Math.min(8, run.req.researchers || 6));
-  const X = Math.max(1, Math.min(3, run.req.redteam || 2));
+  // team size: `agents` = researchers + red team (8..128); older requests give the two counts
+  let R, X;
+  if (run.req.agents) {
+    const N = Math.max(4, Math.min(128, run.req.agents));
+    X = Math.max(1, Math.round(N / 5));
+    R = N - X;
+  } else {
+    R = Math.max(2, Math.min(8, run.req.researchers || 6));
+    X = Math.max(1, Math.min(3, run.req.redteam || 2));
+  }
+  const B = Math.max(1, Math.round(R / 12));
+  run.branches = Array.from({ length: B }, (_, i) => ({ id: `B${i + 1}`, title: "", scope: "" }));
   run.seats = [
     { id: "P", role: "planner", model: LEAD_MODEL },
-    ...Array.from({ length: R }, (_, k) => ({ id: `R${k + 1}`, role: "researcher", model: SEAT_MODEL })),
+    ...Array.from({ length: R }, (_, k) => ({ id: `R${k + 1}`, role: "researcher", model: SEAT_MODEL, branch: `B${Math.min(B, Math.floor((k * B) / R) + 1)}` })),
     ...Array.from({ length: X }, (_, k) => ({ id: `X${k + 1}`, role: "redteam", model: SEAT_MODEL })),
     { id: "W", role: "writer", model: LEAD_MODEL },
     { id: "J", role: "judge", model: LEAD_MODEL },
   ];
-  run.emit({ t: "run", id: run.id, question: run.req.question, seats: run.seats.map(({ id, role, model }) => ({ id, role, model })), budget_min: run.req.minutes || 30, agent: MOCK ? "mock" : AGENT_ID, started_at: new Date(run.started).toISOString() });
+  run.emit({ t: "run", id: run.id, question: run.req.question, seats: run.seats.map(({ id, role, model, branch }) => ({ id, role, model, ...(branch && B > 1 ? { branch } : {}) })), branches: B, budget_min: run.req.minutes || 30, agent: MOCK ? "mock" : AGENT_ID, started_at: new Date(run.started).toISOString() });
   const base = baseline(run);
   let status = "ended";
   try {
