@@ -140,7 +140,7 @@ http
         return send(res, 200, fs.readFileSync(f), TYPES[path.extname(f)] || "text/plain");
       }
       if (p.startsWith("/api/")) return send(res, 404, { error: "not found" });
-      let f = p === "/" || p.startsWith("/run/") ? path.join(PUB, "index.html") : path.join(PUB, path.normalize(p).replace(/^(\.\.[/\\])+/, ""));
+      let f = p === "/ask" ? path.join(PUB, "ask.html") : p === "/" || p.startsWith("/run/") ? path.join(PUB, "index.html") : path.join(PUB, path.normalize(p).replace(/^(\.\.[/\\])+/, ""));
       if (!f.startsWith(PUB) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) f = path.join(PUB, "index.html");
       if (!fs.existsSync(f)) return send(res, 404, "page not built yet", "text/plain");
       return send(res, 200, fs.readFileSync(f), TYPES[path.extname(f)] || "application/octet-stream");
