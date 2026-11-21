@@ -334,7 +334,37 @@ function claimDigest(run, cids) {
 }
 
 // ---------------------------------------------------------------- phases
+const GRACE_MS = Number(process.env.SWARM_GRACE_MS || 3 * 60_000);
+
+// emit each phase name once per round, however many branches enter it
+function phaseOnce(run, name, round = 1) {
+  run.phaseSeen ??= new Set();
+  const k = `${name}:${round}`;
+  if (run.phaseSeen.has(k)) return;
+  run.phaseSeen.add(k);
+  run.emit({ t: "phase", name, round });
+}
+
+// wait for a set of seat turns, but once 90% are back give the rest at most GRACE_MS:
+// stragglers keep running and their rows land when they finish; busy seats skip the next step
+async function settle(tasks, frac = 0.9) {
+  const list = tasks.filter(Boolean);
+  if (!list.length) return;
+  let done = 0, timer = null;
+  await new Promise((resolve) => {
+    for (const p of list)
+      p.finally(() => {
+        done++;
+        if (done === list.length) resolve();
+        else if (!timer && done >= Math.ceil(list.length * frac)) timer = setTimeout(resolve, GRACE_MS);
+      });
+  });
+  if (timer) clearTimeout(timer);
+}
+
 async function seatTurn(run, seat, phase, input) {
+  if (seat.busy) return null;
+  seat.busy = true;
   run.emit({ t: "turn", seat: seat.id, phase, status: "started" });
   const t0 = Date.now();
   try {
@@ -354,6 +384,8 @@ async function seatTurn(run, seat, phase, input) {
   } catch (e) {
     run.emit({ t: "turn", seat: seat.id, phase, status: "failed", ms: Date.now() - t0, error: String(e.message || e).slice(0, 400) });
     return null;
+  } finally {
+    seat.busy = false;
   }
 }
 
@@ -419,12 +451,12 @@ async function plan(run) {
   }
 }
 
-async function research(run) {
-  run.emit({ t: "phase", name: "research", round: 1 });
+async function research(run, branch = null) {
+  phaseOnce(run, "research", 1);
   const v = run.view();
   const all = [...v.questions.values()];
   const tasks = run.seats
-    .filter((s) => s.role === "researcher")
+    .filter((s) => s.role === "researcher" && (!branch || s.branch === branch))
     .map((seat) => {
       const mine = all.filter((q) => q.owner === seat.id);
       const ctx = run.branches?.length > 1 ? all.filter((q) => q.branch === seat.branch || q.parent === null) : all;
@@ -437,14 +469,14 @@ YOUR sub-questions: ${mine.map((q) => q.id).join(", ")}.
 Research them in depth now: many searches, open the pages, read them. For each of your sub-questions write the claims it rests on with sources and exact quotes, then an answer row (or "abandoned" with the reason). Look for contradicting evidence for every key claim and log it. Add new sub-questions if you discover them. If another seat's sub-question overlaps yours, tell them in the room.`;
       return seatTurn(run, seat, "research", input);
     });
-  await Promise.allSettled(tasks);
+  await settle(tasks);
 }
 
-async function crosscheck(run) {
-  run.emit({ t: "phase", name: "crosscheck", round: 1 });
+async function crosscheck(run, branch = null) {
+  phaseOnce(run, "crosscheck", 1);
   const researchers = run.seats.filter((s) => s.role === "researcher");
   const v = run.view();
-  const tasks = researchers.map((seat) => {
+  const tasks = researchers.filter((s) => !branch || s.branch === branch).map((seat) => {
     const mates = researchers.filter((r) => r.branch === seat.branch);
     const pool = mates.length > 1 ? mates : researchers;
     const other = pool[(pool.indexOf(seat) + 1) % pool.length];
@@ -458,21 +490,23 @@ Cross-check ${other.id}'s key claims from DIFFERENT, independent sources (a diff
 ${claimDigest(run, theirs)}`;
     return seatTurn(run, seat, "crosscheck", input);
   });
-  await Promise.allSettled(tasks.filter(Boolean));
+  await settle(tasks);
 }
 
-async function redteam(run, round, gateProblems = []) {
-  run.emit({ t: "phase", name: "redteam", round });
-  const reds = run.seats.filter((s) => s.role === "redteam");
+async function redteam(run, round, gateProblems = [], branch = null) {
+  phaseOnce(run, "redteam", round);
+  const seatBranch = new Map(run.seats.map((s) => [s.id, s.branch]));
+  const reds = run.seats.filter((s) => s.role === "redteam" && (!branch || s.branch === branch) && !s.busy);
+  if (!reds.length) return;
   const v = run.view();
   const order = new Map(run.seats.map((s, i) => [s.id, i]));
-  const keys = v.keyClaims.slice().sort((a, b) => (order.get(a.by) ?? 0) - (order.get(b.by) ?? 0)).map((c) => c.id);
+  const keys = v.keyClaims.filter((c) => !branch || seatBranch.get(c.by) === branch).sort((a, b) => (order.get(a.by) ?? 0) - (order.get(b.by) ?? 0)).map((c) => c.id);
   const unchecked = keys.filter((cid) => !v.sourcesOf(cid).some((s) => v.checksOf(s.id).some((k) => k.result === "confirmed")));
   const targets = round === 1 ? keys : unchecked.length ? unchecked : keys;
   const tasks = reds.map((seat, i) => {
     const per = Math.ceil(targets.length / reds.length);
     const mine = targets.slice(i * per, (i + 1) * per);
-    const unanswered = [...v.questions.values()].filter((q) => !v.answers.has(q.id)).map((q) => `${q.id}: ${q.text}`);
+    const unanswered = [...v.questions.values()].filter((q) => q.owner !== "P" && !v.answers.has(q.id) && (!branch || q.branch === branch)).map((q) => `${q.id}: ${q.text}`);
     const input = `${roomFor(run, seat)}
 
 You are the red team. You do not write the answer; you try to break it before anyone declares it done.
@@ -482,14 +516,14 @@ Key claims to attack:
 ${claimDigest(run, mine)}`;
     return seatTurn(run, seat, "redteam", input);
   });
-  await Promise.allSettled(tasks);
+  await settle(tasks);
 }
 
-async function fix(run, round, problems = []) {
-  run.emit({ t: "phase", name: "fix", round });
+async function fix(run, round, problems = [], branch = null) {
+  phaseOnce(run, "fix", round);
   const v = run.view();
   const tasks = run.seats
-    .filter((s) => s.role === "researcher")
+    .filter((s) => s.role === "researcher" && (!branch || s.branch === branch))
     .map((seat) => {
       const ch = v.openChallenges.filter((x) => x.to === seat.id || v.claims.get(x.claim)?.by === seat.id);
       const wrong = v.checks.filter((k) => k.result !== "confirmed" && v.sources.get(k.source)?.by === seat.id);
@@ -510,7 +544,15 @@ Your claims now:
 ${claimDigest(run, [...v.claims.values()].filter((c) => c.by === seat.id).map((c) => c.id))}`;
       return seatTurn(run, seat, "fix", input);
     });
-  await Promise.allSettled(tasks.filter(Boolean));
+  await settle(tasks);
+}
+
+// one branch moves through research -> cross-check -> red team -> fix without waiting for the other branches
+async function branchPipeline(run, b) {
+  await research(run, b.id);
+  if (run.minutesLeft() > 4) await crosscheck(run, b.id);
+  await redteam(run, 1, [], b.id);
+  await fix(run, 1, [], b.id);
 }
 
 // ---------------------------------------------------------------- gate
@@ -555,7 +597,7 @@ async function quoteOnPage(url, quote) {
 }
 
 async function gate(run, attempt) {
-  run.emit({ t: "phase", name: "gate", round: attempt });
+  phaseOnce(run, "gate", attempt);
   const v = run.view();
   const problems = [];
   for (const q of v.questions.values()) if (q.owner !== "P" && !v.answers.has(q.id)) problems.push(`${q.id} has no answer (${q.owner || q.by})`);
@@ -584,6 +626,7 @@ async function gate(run, attempt) {
   const stats = { key_claims: v.keyClaims.length, confirmed, open_challenges: v.openChallenges.length, quotes_checked: results.length, quotes_reached: reached, quotes_found: found };
   const pass = problems.length === 0;
   run.emit({ t: "gate", attempt, pass, problems, stats });
+  run.phaseSeen?.add(`gate:${attempt}`);
   return { pass, problems };
 }
 
@@ -783,7 +826,7 @@ async function main() {
   run.seats = [
     { id: "P", role: "planner", model: LEAD_MODEL },
     ...Array.from({ length: R }, (_, k) => ({ id: `R${k + 1}`, role: "researcher", model: SEAT_MODEL, branch: `B${Math.min(B, Math.floor((k * B) / R) + 1)}` })),
-    ...Array.from({ length: X }, (_, k) => ({ id: `X${k + 1}`, role: "redteam", model: SEAT_MODEL })),
+    ...Array.from({ length: X }, (_, k) => ({ id: `X${k + 1}`, role: "redteam", model: SEAT_MODEL, branch: `B${(k % B) + 1}` })),
     { id: "W", role: "writer", model: LEAD_MODEL },
     { id: "J", role: "judge", model: LEAD_MODEL },
   ];
@@ -792,12 +835,13 @@ async function main() {
   let status = "ended";
   try {
     await plan(run);
-    await research(run);
-    if (run.minutesLeft() > 4) await crosscheck(run);
+    await Promise.all(run.branches.map((b) => branchPipeline(run, b)));
     let g = { pass: false, problems: [] };
     for (let round = 1; round <= 4; round++) {
-      await redteam(run, round, g.problems);
-      await fix(run, round, g.problems);
+      if (round > 1) {
+        await redteam(run, round, g.problems);
+        await fix(run, round, g.problems);
+      }
       g = await gate(run, round);
       if (g.pass || run.minutesLeft() < 6) break;
     }
