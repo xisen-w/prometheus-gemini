@@ -1,0 +1,6 @@
+{
+  "share": 0.5,
+  "verifier_weight": 1,
+  "chosen_on": "dev (20 forms from FUNSD training set), mean F1 of clean and messy",
+  "frozen_at": "2026-11-21T23:32:01.551Z"
+}

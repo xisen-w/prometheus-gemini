@@ -66,7 +66,7 @@ const PHASE = { plan: 'Splitting the question', research: 'Agents are researchin
 let es = null, timer = null;
 
 function render(md, id) {
-  const html = marked.parse(md.replace(/\[((?:C\d+-\d+)(?:\s*[,;]\s*C\d+-\d+)*)\]/g, (_, ids) => ids.split(/\s*[,;]\s*/).map((c) => `<a class="tag" href="/run/${id}#report" title="See the sources behind ${c}">${c}</a>`).join('')));
+  const html = marked.parse(md.replace(/~/g, '\\~').replace(/\[((?:C\d+-\d+)(?:\s*[,;]\s*C\d+-\d+)*)\]/g, (_, ids) => ids.split(/\s*[,;]\s*/).map((c) => `<a class="tag" href="/run/${id}#report" title="See the sources behind ${c}">${c}</a>`).join('')));
   const doc = new DOMParser().parseFromString(html, 'text/html');
   doc.querySelectorAll('script,style,iframe,object,embed,form').forEach((n) => n.remove());
   doc.querySelectorAll('*').forEach((n) => [...n.attributes].forEach((a) => { if (/^on/i.test(a.name) || (/^(href|src)$/i.test(a.name) && /^\s*javascript:/i.test(a.value))) n.removeAttribute(a.name); }));
