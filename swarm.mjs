@@ -1314,7 +1314,8 @@ async function verifyReport(run, report) {
   run.emit({ t: "turn", seat: "W", phase: "verify", status: "started" });
   const t0 = Date.now();
   const sys = `You check citations in a research report. Each unit is a sentence or a Markdown table row, followed by the evidence behind the claim ids it cites (the ledger claim text and exact quotes from the sources).
-Flag a unit ONLY when it presents, as a sourced fact, something specific (a number, a date, a name, an event, an attributed motive) that the evidence of its cited ids contradicts or does not contain. Then rewrite it, changing as little as possible, so the sourced part says only what that evidence supports.
+Flag a unit ONLY when it is inconsistent with its evidence: a number, date, name, quantity, direction or event in the unit differs from what the evidence of its cited ids says (the source says 12, the unit says 21; the source says "raised", the unit says "cut"; the source names one person, the unit another). Then correct exactly that, changing nothing else.
+A unit that says MORE than any one source is not a problem. Putting several sources together shows things no single source states, and that synthesis is what the report is for: conclusions, comparisons, causes, implications and estimates drawn from the evidence all stay as written.
 Do NOT flag, and never remove:
 - links, addresses, handles, e-mail addresses and other pointers the reader can check by opening them. Never delete or shorten a URL or a contact channel, even when the evidence does not repeat it.
 - the team's own inference or judgement drawn from the evidence ("which suggests…", "not the lead author", "about 21 years old"). Reasoning is wanted. If it reads as if the source itself said it, keep the inference and mark it as the team's reading in the report's language (for example "our reading:" or "推断："), nothing more.
