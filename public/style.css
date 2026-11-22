@@ -415,3 +415,7 @@ figure.fig figcaption b { color: var(--fg); font-weight: 600; }
 
 /* attach files */
 label.attach input[type=file] { margin-top: 8px; font: 13px var(--sans); color: var(--muted); max-width: 100%; }
+
+/* the run code, asked for only when the page is served through sharednet.ai */
+.ask label.runcode { display: flex; align-items: center; gap: 12px; margin-top: 14px; font: 13px var(--sans); color: var(--muted); }
+.ask label.runcode input { flex: 0 1 280px; min-width: 0; font: 14px var(--sans); padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; }

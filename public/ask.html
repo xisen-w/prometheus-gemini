@@ -51,6 +51,7 @@
       <button class="go" type="submit">Start</button>
     </div>
     <div class="row"><label class="muted" style="font-size:14px">Attach files (data, logs, code; up to 25 MB): <input type="file" name="files" multiple style="font:inherit;font-size:13px;margin-left:6px"></label></div>
+    <div class="row" id="runcode" hidden><label class="muted" style="font-size:14px">Run code: <input name="run_code" autocomplete="off" spellcheck="false" placeholder="needed to start a run here" style="font:inherit;font-size:14px;margin-left:6px;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit"></label></div>
     <div class="muted" id="err" style="margin-top:10px"></div>
   </form>
   <section id="run" hidden>
@@ -63,7 +64,11 @@
 <script type="module">
 import { marked } from '/vendor/marked.esm.js';
 import { protectMath } from '/mathmd.js';
+import { follow } from '/stream.js';
 const $ = (s) => document.querySelector(s);
+// served through the sharednet.ai forward, the page lives under a base path and starting a run takes the run code
+const BASE = window.GP?.base || '';
+const FORWARDED = !!window.GP?.forwarded;
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const PHASE = { plan: 'Splitting the question', research: 'Agents are researching', crosscheck: 'Agents are cross-checking each other', redteam: 'The red team is re-opening sources', fix: 'Fixing what the red team found', gate: 'Checking the evidence', write: 'Writing the answer', judge: 'An independent judge is reading it', done: 'Done' };
 let es = null, timer = null;
@@ -89,23 +94,22 @@ function open(id) {
     const mins = S.start ? (((S.done ? Date.parse(S.done.at) : Date.now()) - S.start) / 60000) : 0;
     const label = S.done ? `Done · ${esc(S.done.status)}` : (PHASE[S.phase] || 'Starting');
     $('#now').innerHTML = `${S.done ? '' : '<span class="dot"></span>'}${label}${S.done ? '' : ` <span class="muted">· ${mins.toFixed(0)} min</span>`}`;
-    $('#nums').innerHTML = `${S.agents} agents · ${S.searches} searches · ${S.pages.size} pages read · ${S.claims} claims · ${S.checks} red-team checks${S.done ? ` · ${mins.toFixed(1)} min` : ''} · <a href="/run/${id}">watch the agents</a>${S.report ? ` · <a href="/api/runs/${id}/file/report.md" download="answer-${id}.md">download .md</a>` : ''}`;
+    $('#nums').innerHTML = `${S.agents} agents · ${S.searches} searches · ${S.pages.size} pages read · ${S.claims} claims · ${S.checks} red-team checks${S.done ? ` · ${mins.toFixed(1)} min` : ''} · <a href="${BASE}/run/${id}">watch the agents</a>${S.report ? ` · <a href="/api/runs/${id}/file/report.md" download="answer-${id}.md">download .md</a>` : ''}`;
   };
   const loadReport = async () => {
-    const r = await fetch(`/api/runs/${id}/file/report.md`, { cache: 'no-store' });
+    const r = await fetch(`${BASE}/api/runs/${id}/file/report.md`, { cache: 'no-store' });
     if (r.ok) { S.report = true; render(await r.text(), id); paint(); }
   };
-  es = new EventSource(`/api/runs/${id}/stream`);
-  es.onmessage = (m) => {
-    let ev; try { ev = JSON.parse(m.data); } catch { return; }
+  const onEvent = (ev) => {
     if (ev.t === 'run') { Object.assign(S, { searches: 0, pages: new Set(), claims: 0, checks: 0, done: null }); $('#q').textContent = ev.question; S.start = Date.parse(ev.started_at); S.agents = (ev.seats || []).filter((s) => s.role === 'researcher' || s.role === 'redteam').length; document.title = `${ev.question} · Prometheus on Gemini`; }
     else if (ev.t === 'phase') S.phase = ev.name;
     else if (ev.t === 'turn' && ev.status === 'completed') { S.searches += (ev.searches || []).length; for (const u of ev.urls || []) S.pages.add(u); }
     else if (ev.t === 'ledger') for (const r of ev.rows || []) { if (r.type === 'claim') S.claims++; if (r.type === 'check') S.checks++; }
     else if (ev.t === 'report') loadReport();
-    else if (ev.t === 'done') { S.done = ev; S.phase = 'done'; es.close(); clearInterval(timer); if (!S.report) loadReport(); }
+    else if (ev.t === 'done') { S.done = ev; S.phase = 'done'; es?.close(); clearInterval(timer); if (!S.report) loadReport(); }
     paint();
   };
+  es = follow(BASE, id, { onEvent });
   timer = setInterval(paint, 15000);
   paint();
 }
@@ -118,22 +122,26 @@ $('#f').addEventListener('submit', async (e) => {
   try {
     const b64 = (file) => new Promise((ok, bad) => { const rd = new FileReader(); rd.onload = () => ok(String(rd.result).split(',')[1] || ''); rd.onerror = bad; rd.readAsDataURL(file); });
     const attachments = await Promise.all([...f.files.files].map(async (x) => ({ name: x.name, data: await b64(x) })));
-    const r = await fetch('/api/runs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question: f.question.value.trim(), agents, minutes, seat_model: f.model.value, baseline: false, ...(attachments.length ? { attachments } : {}), ...(agents > 16 ? {} : { max_rounds: 2 }) }) });
-    const j = await r.json();
+    const code = FORWARDED ? f.run_code.value.trim() : '';
+    const r = await fetch(`${BASE}/api/runs`, { method: 'POST', headers: { 'content-type': 'application/json', ...(code ? { 'x-run-code': code } : {}) }, body: JSON.stringify({ question: f.question.value.trim(), agents, minutes, seat_model: f.model.value, baseline: false, ...(attachments.length ? { attachments } : {}), ...(agents > 16 ? {} : { max_rounds: 2 }) }) });
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 413) throw new Error('The attached files are too large to send through this address.');
     if (!r.ok || !j.id) throw new Error(j.error || `Server said ${r.status}`);
-    history.pushState(null, '', `/ask?run=${j.id}`);
+    if (code) { try { localStorage.setItem('gp_run_code', code); } catch {} }
+    history.pushState(null, '', `${BASE}/ask?run=${j.id}`);
     open(j.id);
   } catch (err) { $('#err').textContent = String(err.message || err); }
   btn.disabled = false;
 });
 $('#f').question.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); $('#f').requestSubmit(); } });
 
+if (FORWARDED) { $('#runcode').hidden = false; try { $('#f').run_code.value = localStorage.getItem('gp_run_code') || ''; } catch {} }
 const id = new URLSearchParams(location.search).get('run');
 if (id) open(id);
-fetch('/api/runs').then((r) => r.json()).then((runs) => {
+fetch(`${BASE}/api/runs`).then((r) => r.json()).then((runs) => {
   if (!runs.length) return;
   $('#past').hidden = false;
-  $('#pastlist').innerHTML = runs.slice(0, 12).map((r) => `<a href="/ask?run=${esc(r.id)}"><span>${esc(r.status)}</span>${esc(r.question.slice(0, 110))}</a>`).join('');
+  $('#pastlist').innerHTML = runs.slice(0, 12).map((r) => `<a href="${BASE}/ask?run=${esc(r.id)}"><span>${esc(r.status)}</span>${esc(r.question.slice(0, 110))}</a>`).join('');
 }).catch(() => {});
 </script>
 </body>

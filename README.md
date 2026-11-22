@@ -52,3 +52,21 @@ node cli.mjs grep <run> "timeout" --type claim
 ```
 
 In the browser the same thing is the "Attach files" field (up to 25 MB; the command line takes folders up to 300 MB and skips `.git`, `node_modules` and files over 25 MB).
+
+## Served from another site
+
+The server listens on this machine only. To put it on a site of yours, the site passes its own pages on to the
+server through the tunnel, under a path of the site's choosing:
+
+- The site asks for its own access code, then requests `<tunnel address>/__gp/<forward key>/<rest of the path>`.
+  The server answers such a request without asking for its own code, and rewrites the page's addresses to the
+  site's path (`SWARM_FORWARD_BASE`, `/gprometheus` by default).
+- A quick tunnel gets a new address every time it restarts, so `scripts/report-address.mjs` reports the current
+  one to the site once a minute. When the reports stop, the site can fall back to the saved copy that
+  `scripts/export-static.mjs` writes.
+- A run marked private (it has attached files, or a file named `private` in its folder) is not shown through the
+  forward, unless it was started there or has a file named `forwarded` in its folder.
+- Starting a run through the forward takes the run code as well (the server's own access code), and at most
+  `SWARM_FORWARD_MAX_AGENTS` agents (128 by default): the site's code only opens the pages.
+- A page opened through a tunnel follows a run by asking for new events request by request
+  (`/api/runs/<id>/events?from=<byte>`), because a tunnel holds a slow event stream back.

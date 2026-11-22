@@ -1,11 +1,26 @@
 import { marked } from '/vendor/marked.esm.js';
 import { placeFigures } from '/figures.js';
 import { protectMath } from '/mathmd.js';
+import { follow } from '/stream.js';
 
 // a published copy sets window.GP = { base: '/gprometheus', static: true }: finished runs served as files, no server
 const BASE = window.GP?.base || '';
 const STATIC = !!window.GP?.static;
-const fileUrl = (id, name) => (STATIC ? `${BASE}/data/${encodeURIComponent(id)}/${name}` : `/api/runs/${encodeURIComponent(id)}/file/${name}`);
+const fileUrl = (id, name) => (STATIC ? `${BASE}/data/${encodeURIComponent(id)}/${name}` : `${BASE}/api/runs/${encodeURIComponent(id)}/file/${name}`);
+// Through the sharednet.ai forward, starting a run takes the run code; it is asked for once and kept in this browser.
+const FORWARDED = !!window.GP?.forwarded;
+const runCode = { get: () => { try { return localStorage.getItem('gp_run_code') || ''; } catch { return ''; } }, set: (v) => { try { v ? localStorage.setItem('gp_run_code', v) : localStorage.removeItem('gp_run_code'); } catch {} } };
+async function postRun(body, given) {
+  const code = (given ?? runCode.get()).trim();
+  const r = await fetch(`${BASE}/api/runs`, { method: 'POST', headers: { 'content-type': 'application/json', ...(code ? { 'x-run-code': code } : {}) }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 403 && j.need === 'run_code') { runCode.set(''); throw new Error(code ? 'That run code is not right.' : 'Enter the run code to start a run here.'); }
+  if (r.status === 413) throw new Error('The attached files are too large to send through this address.');
+  if (!r.ok || !j.id) throw new Error(j.error || `Server said ${r.status}`);
+  if (code) runCode.set(code);
+  return j.id;
+}
+
 
 // ---------- helpers
 const $ = (s, el = document) => el.querySelector(s);
@@ -137,7 +152,7 @@ function derive() {
 }
 const touch = () => { D = null; };
 // a source that is an attached file opens the file itself
-const srcHref = (url) => (/^attachment:/.test(url || '') ? `${STATIC ? `${BASE}/data/${encodeURIComponent(S.id)}/attachments/` : `/api/runs/${encodeURIComponent(S.id)}/attachment/`}${String(url).replace(/^attachment:\/*/, '').replace(/^attachments\//, '').replace(/#.*$/, '').split('/').map(encodeURIComponent).join('/')}` : url);
+const srcHref = (url) => (/^attachment:/.test(url || '') ? `${STATIC ? `${BASE}/data/${encodeURIComponent(S.id)}/attachments/` : `${BASE}/api/runs/${encodeURIComponent(S.id)}/attachment/`}${String(url).replace(/^attachment:\/*/, '').replace(/^attachments\//, '').replace(/#.*$/, '').split('/').map(encodeURIComponent).join('/')}` : url);
 const byId = (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true });
 
 function claimInfo(id) {
@@ -198,6 +213,7 @@ async function showAsk() {
           <label class="check"><input type="checkbox" name="baseline" checked> Compare with Google Deep Research</label>
         </div>
       </div>
+      ${FORWARDED ? `<label class="runcode"><span>Run code</span><input name="run_code" autocomplete="off" spellcheck="false" placeholder="needed to start a run here" value="${esc(runCode.get())}"></label>` : ''}
       <div class="err" id="err"></div>
     </form>
     <section class="past" id="past" hidden><h2>Past runs</h2><ol></ol></section>
@@ -230,16 +246,14 @@ async function showAsk() {
       body.attachments = await Promise.all([...f.files.files].map(async (x) => ({ name: x.webkitRelativePath || x.name, data: await b64(x) })));
     }
     try {
-      const r = await fetch('/api/runs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j.id) throw new Error(j.error || `Server said ${r.status}`);
-      location.assign(`${BASE}/run/${encodeURIComponent(j.id)}`);
+      const id = await postRun(body, FORWARDED ? f.run_code.value : undefined);
+      location.assign(`${BASE}/run/${encodeURIComponent(id)}`);
     } catch (err) {
       $('#err').textContent = err.message; btn.disabled = false; btn.textContent = 'Start';
     }
   });
   try {
-    const runs = await (await fetch(STATIC ? `${BASE}/data/runs.json` : '/api/runs')).json();
+    const runs = await (await fetch(STATIC ? `${BASE}/data/runs.json` : `${BASE}/api/runs`)).json();
     if (STATIC) { const f = $('#askf'); if (f) f.hidden = true; const h = $('.ask h1'); if (h) h.textContent = 'Runs'; const l = $('.ask .lede'); if (l) l.textContent = 'Finished runs of the swarm. Open one to read the report and check every claim.'; }
     if (Array.isArray(runs) && runs.length) {
       const past = $('#past');
@@ -329,21 +343,12 @@ async function connectStatic() {
 }
 function connect() {
   if (STATIC) return connectStatic();
-  es = new EventSource(`/api/runs/${encodeURIComponent(S.id)}/stream`);
-  es.onopen = () => {
-    if (S.events > 0 && !S.done) {
-      // The server replays from the start on reconnect: rebuild from scratch.
-      const tab = S.tab, chosen = S.tabChosen;
-      es.close(); openRunReset(tab, chosen); return;
-    }
-  };
   let basePending = false;
-  es.onmessage = (e) => {
+  const onEvent = (ev) => {
     if (gotDone) return;
-    let ev; try { ev = JSON.parse(e.data); } catch { return; }
     if (ev.t === 'baseline') basePending = ev.status === 'started' || ev.status === 'submitted';
     if (ev.t === 'done') S.sawDone = true;
-    if (S.sawDone && !basePending && (ev.t === 'done' || ev.t === 'baseline')) { gotDone = true; es.close(); }
+    if (S.sawDone && !basePending && (ev.t === 'done' || ev.t === 'baseline')) { gotDone = true; es?.close(); }
     queue.push(ev);
     if (!scheduled) {
       scheduled = true;
@@ -351,7 +356,7 @@ function connect() {
       requestAnimationFrame(f); setTimeout(f, 250); // rAF pauses in background tabs
     }
   };
-  es.onerror = () => { if (S.done) es.close(); else setMeta(); };
+  es = follow(BASE, S.id, { onEvent, onError: () => { if (S.done) es.close(); else setMeta(); } });
 }
 function openRunReset(tab, chosen) {
   const id = S.id;

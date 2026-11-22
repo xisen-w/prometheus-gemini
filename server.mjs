@@ -42,10 +42,14 @@ function lastStatus(id) {
   }
 }
 
-function listRuns() {
+// A run marked private (attached files, or marked by hand) is not shown through the sharednet.ai forward,
+// unless it was started there or shared by hand (a file named "forwarded" in its folder).
+const hiddenFromForward = (id) => fs.existsSync(path.join(RUNS, id, "private")) && !fs.existsSync(path.join(RUNS, id, "forwarded"));
+
+function listRuns(fwd = false) {
   return fs
     .readdirSync(RUNS)
-    .filter((d) => safeId(d) && fs.existsSync(path.join(RUNS, d, "request.json")))
+    .filter((d) => safeId(d) && fs.existsSync(path.join(RUNS, d, "request.json")) && !(fwd && hiddenFromForward(d)))
     .map((d) => {
       const req = JSON.parse(fs.readFileSync(path.join(RUNS, d, "request.json"), "utf8"));
       const ev = firstEvent(d);
@@ -54,7 +58,8 @@ function listRuns() {
     .sort((a, b) => String(b.started_at).localeCompare(String(a.started_at)));
 }
 
-function startRun(body) {
+function startRun(body, fwd = false) {
+  if (fwd && Number(body.agents) > FWD_MAX_AGENTS) throw new Error(`a run started here can have ${FWD_MAX_AGENTS} agents at most`);
   const q = String(body.question || "").trim();
   if (q.length < 8) throw new Error("question too short");
   const d = new Date();
@@ -91,6 +96,7 @@ function startRun(body) {
     fs.writeFileSync(f, buf);
   }
   if (bytes) { req.attached_bytes = bytes; fs.writeFileSync(path.join(dir, "private"), "a run with attached files is never exported to the public copy\n"); }
+  if (fwd) fs.writeFileSync(path.join(dir, "forwarded"), "started through the sharednet.ai forward, so it is shown there\n");
   fs.writeFileSync(path.join(dir, "request.json"), JSON.stringify(req, null, 2));
   const log = fs.openSync(path.join(dir, "swarm.log"), "a");
   const child = spawn(process.execPath, [path.join(ROOT, "swarm.mjs"), "--run", id], { cwd: ROOT, stdio: ["ignore", log, log], detached: true, env: process.env });
@@ -102,6 +108,11 @@ function stream(req, res, id) {
   const file = path.join(RUNS, id, "events.ndjson");
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive", "x-accel-buffering": "no" });
   let pos = 0, rest = "", closed = false, done = false, sawDone = false, basePending = false;
+  // Every event carries the byte offset after it as its id. A browser that reconnects sends the last id it saw,
+  // and the stream resumes there instead of replaying the whole run (a proxy in front may cut long streams).
+  const last = Number(req.headers["last-event-id"]);
+  try { if (Number.isInteger(last) && last > 0 && last <= fs.statSync(file).size) pos = last; } catch {}
+  let off = pos;
   const pump = () => {
     if (closed) return;
     let size = 0;
@@ -115,8 +126,9 @@ function stream(req, res, id) {
     const lines = (rest + buf.toString("utf8")).split("\n");
     rest = lines.pop();
     for (const l of lines) {
+      off += Buffer.byteLength(l) + 1;
       if (!l.trim()) continue;
-      res.write(`data: ${l}\n\n`);
+      res.write(`id: ${off}\ndata: ${l}\n\n`);
       if (l.includes('"t":"baseline"')) basePending = /"status":"(started|submitted)"/.test(l);
       if (l.includes('"t":"done"')) sawDone = true;
       if (sawDone && !basePending) done = true;
@@ -129,6 +141,44 @@ function stream(req, res, id) {
   }, 700);
   const ping = setInterval(() => !closed && res.write(": ping\n\n"), 15000);
   req.on("close", () => { closed = true; clearInterval(timer); clearInterval(ping); });
+}
+
+// The same events for a page that cannot hold a stream open (behind a tunnel or the sharednet.ai forward): what
+// is new after byte `from`, answered at once when there is something and after 20 s when there is not. The first
+// line of the answer says where to ask from next. Whole lines only, about 2 MB at a time.
+function events(req, res, id, from) {
+  const file = path.join(RUNS, id, "events.ndjson");
+  const started = Date.now();
+  let closed = false, timer = null;
+  req.on("close", () => { closed = true; clearTimeout(timer); });
+  const read = () => {
+    let size = 0;
+    try { size = fs.statSync(file).size; } catch { return null; }
+    if (from > size) from = 0;
+    if (size <= from) return null;
+    const fd = fs.openSync(file, "r");
+    try {
+      for (const want of [2_000_000, 32_000_000]) {
+        const buf = Buffer.alloc(Math.min(size - from, want));
+        fs.readSync(fd, buf, 0, buf.length, from);
+        const cut = buf.lastIndexOf(10);
+        if (cut >= 0) return buf.subarray(0, cut + 1);
+        if (buf.length < want) return null; // a line still being written
+      }
+      return null;
+    } finally { fs.closeSync(fd); }
+  };
+  const tick = () => {
+    if (closed) return;
+    const chunk = read();
+    if (chunk || Date.now() - started > 20_000) {
+      res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" });
+      res.write(JSON.stringify({ next: from + (chunk ? chunk.length : 0) }) + "\n");
+      return res.end(chunk || "");
+    }
+    timer = setTimeout(tick, 700);
+  };
+  tick();
 }
 
 // Access code for requests that arrive through a public tunnel. A request made on this machine directly
@@ -164,6 +214,37 @@ function gate(req, res, p, url) {
   return true;
 }
 
+// The forward: sharednet.ai/gprometheus passes its requests on to /__gp/<key>/… of this server. The key is known
+// only to this machine and to sharednet.ai, which has already asked the reader for its own access code. Pages
+// served this way live under FWD_BASE, so their addresses are rewritten to it.
+const FWD_KEY = (process.env.SWARM_FORWARD_KEY || "").trim();
+const FWD_BASE = (process.env.SWARM_FORWARD_BASE || "/gprometheus").replace(/\/+$/, "");
+const FWD_MAX_AGENTS = Number(process.env.SWARM_FORWARD_MAX_AGENTS || 128);
+const sameSecret = (a, b) => { const x = crypto.createHash("sha256").update(a).digest(), y = crypto.createHash("sha256").update(b).digest(); return crypto.timingSafeEqual(x, y); };
+function underBase(buf, ext) {
+  let s = buf.toString("utf8");
+  if (ext === ".js" || ext === ".mjs" || ext === ".html") s = s.replaceAll("from '/", `from '${FWD_BASE}/`);
+  if (ext === ".html") {
+    s = s.replaceAll('href="/', `href="${FWD_BASE}/`).replaceAll('src="/', `src="${FWD_BASE}/`)
+      .replace("<script", `<script>window.GP = { base: ${JSON.stringify(FWD_BASE)}, static: false, forwarded: true };</script>\n<script`);
+    if (!s.includes('name="robots"')) s = s.replace("<head>", '<head>\n<meta name="robots" content="noindex, nofollow">');
+  }
+  return s;
+}
+// Starting a run spends the owner's API key. Through the forward it takes the run code as well (the access code
+// of this server), because the code that opens the pages on sharednet.ai is short and widely given out.
+function runCodeOk(req) {
+  if (!CODE) return true;
+  const ip = "fwd:" + String(req.headers["x-real-ip"] || req.headers["x-forwarded-for"] || "?").split(",")[0].trim();
+  const nowMs = Date.now();
+  const mine = (tries.get(ip) || []).filter((t) => nowMs - t < 600_000);
+  if (mine.length >= 8) return false;
+  const given = String(req.headers["x-run-code"] || "").trim();
+  if (given && sameSecret(given, CODE)) return true;
+  if (given) { mine.push(nowMs); tries.set(ip, mine); }
+  return false;
+}
+
 function readBody(req) {
   return new Promise((ok, bad) => {
     let s = "";
@@ -175,13 +256,29 @@ function readBody(req) {
 http
   .createServer(async (req, res) => {
     try {
+      let fwd = false;
+      const fm = req.url.match(/^\/__gp\/([A-Za-z0-9_-]{16,200})(?=[/?]|$)(.*)$/);
+      if (fm) {
+        if (!FWD_KEY || !sameSecret(fm[1], FWD_KEY)) return send(res, 404, { error: "not found" });
+        fwd = true;
+        req.url = fm[2].startsWith("/") ? fm[2] : "/" + fm[2];
+        res.setHeader("x-robots-tag", "noindex, nofollow");
+      }
       const url = new URL(req.url, "http://x");
       const p = url.pathname;
-      if (gate(req, res, p, url)) return;
-      if (p === "/api/runs" && req.method === "GET") return send(res, 200, listRuns());
-      if (p === "/api/runs" && req.method === "POST") return send(res, 200, { id: startRun(await readBody(req)) });
-      let m = p.match(/^\/api\/runs\/([^/]+)\/stream$/);
+      if (!fwd && gate(req, res, p, url)) return;
+      if (fwd && p === "/api/ping") return send(res, 200, { ok: true });
+      if (p === "/api/runs" && req.method === "GET") return send(res, 200, listRuns(fwd));
+      if (p === "/api/runs" && req.method === "POST") {
+        if (fwd && !runCodeOk(req)) return send(res, 403, { error: "The run code is needed to start a run here.", need: "run_code" });
+        return send(res, 200, { id: startRun(await readBody(req), fwd) });
+      }
+      let m = p.match(/^\/api\/runs\/([^/]+)\//);
+      if (fwd && m && safeId(m[1]) && hiddenFromForward(m[1])) return send(res, 404, { error: "not found" });
+      m = p.match(/^\/api\/runs\/([^/]+)\/stream$/);
       if (m && safeId(m[1])) return stream(req, res, m[1]);
+      m = p.match(/^\/api\/runs\/([^/]+)\/events$/);
+      if (m && safeId(m[1])) return events(req, res, m[1], Math.max(0, Math.floor(Number(url.searchParams.get("from")) || 0)));
       m = p.match(/^\/api\/runs\/([^/]+)\/file\/(report\.md|baseline\.md|ledger\.jsonl|events\.ndjson|request\.json)$/);
       if (m && safeId(m[1])) {
         const f = path.join(RUNS, m[1], m[2]);
@@ -199,7 +296,9 @@ http
       let f = p === "/ask" ? path.join(PUB, "ask.html") : p === "/" || p.startsWith("/run/") ? path.join(PUB, "index.html") : path.join(PUB, path.normalize(p).replace(/^(\.\.[/\\])+/, ""));
       if (!f.startsWith(PUB) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) f = path.join(PUB, "index.html");
       if (!fs.existsSync(f)) return send(res, 404, "page not built yet", "text/plain");
-      return send(res, 200, fs.readFileSync(f), TYPES[path.extname(f)] || "application/octet-stream");
+      const ext = path.extname(f);
+      if (fwd && (ext === ".html" || ext === ".js" || ext === ".mjs")) return send(res, 200, underBase(fs.readFileSync(f), ext), TYPES[ext]);
+      return send(res, 200, fs.readFileSync(f), TYPES[ext] || "application/octet-stream");
     } catch (e) {
       return send(res, 400, { error: String(e.message || e) });
     }
