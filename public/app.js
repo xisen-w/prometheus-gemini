@@ -367,12 +367,21 @@ function flush() {
   const animate = !replaying;
   for (const ev of batch) handle(ev, animate);
   touch();
-  updateHeader();
-  for (const k of S.dirty) renderPane(k);
-  S.dirty.clear();
-  if (S.drawerClaim) renderDrawer(S.drawerClaim);
-  refreshChips();
   if (wasAtBottom && scrollY > 200) followRoom();
+  // a big run sends events all the time; redrawing counters, panes and chips on every batch froze the page
+  const wait = S.claims.size > 3000 ? 4000 : S.claims.size > 600 ? 2000 : 900;
+  if (performance.now() - lastDraw > wait) draw();
+  else if (!drawTimer) drawTimer = setTimeout(draw, wait);
+}
+let lastDraw = 0, drawTimer = null;
+function draw() {
+  clearTimeout(drawTimer); drawTimer = null; lastDraw = performance.now();
+  if (!S) return;
+  updateHeader();
+  const todo = [...S.dirty]; S.dirty.clear();
+  for (const k of todo) renderPane(k);
+  if (S.drawerClaim) renderDrawer(S.drawerClaim);
+  if (S.tab === 'report' || S.drawerClaim) refreshChips();
 }
 
 function handle(ev, animate) {
@@ -420,7 +429,8 @@ function handle(ev, animate) {
       for (const r of ev.rows || []) ingestRow(r, ev.seat, ev.at);
       for (const x of ev.rejected || []) S.rejected.push({ ...x, seat: ev.seat, at: ev.at });
       ledgerLines(ev).forEach((li) => roomAdd(li, animate));
-      ['evidence', 'questions', 'compare', 'report'].forEach((k) => S.dirty.add(k));
+      ['evidence', 'questions', 'compare'].forEach((k) => S.dirty.add(k));
+      if ((ev.rows || []).some((r) => r.type === 'figure')) S.dirty.add('report');
       break;
     case 'gate': S.gates.push(ev); roomAdd(gateLine(ev), animate); break;
     case 'judge': S.judges.push(ev); roomAdd(judgeLine(ev), animate); break;
@@ -543,7 +553,15 @@ function li(cls, at, inner) {
 function roomAdd(el, animate) {
   if (!el) return;
   if (animate) el.classList.add('in');
-  $('#room').appendChild(el);
+  const room = $('#room');
+  room.appendChild(el);
+  if (room.childElementCount > 1600) {
+    for (let i = 0; i < 400; i++) room.firstElementChild?.remove();
+    S.roomCut = (S.roomCut || 0) + 400;
+    let note = $('#roomcut');
+    if (!note) { note = document.createElement('div'); note.id = 'roomcut'; note.className = 'faint'; note.style.cssText = 'font-size:13px;margin:0 0 12px'; room.before(note); }
+    note.textContent = `${S.roomCut.toLocaleString()} earlier lines are not shown here. The whole record is in events.ndjson.`;
+  }
 }
 addEventListener('scroll', () => syncLatest(), { passive: true });
 function syncLatest() {
