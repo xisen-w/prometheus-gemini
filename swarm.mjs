@@ -1309,9 +1309,17 @@ function evidenceFor(run, ids) {
 async function verifyReport(run, report) {
   const units = citedUnits(report);
   if (!units.length) return report;
+  // the report as written stays on disk, so every change the check makes can be inspected
+  fs.writeFileSync(path.join(run.dir, "report.precheck.md"), report);
   run.emit({ t: "turn", seat: "W", phase: "verify", status: "started" });
   const t0 = Date.now();
-  const sys = `You check citations in a research report. Each unit is a sentence or a Markdown table row, followed by the evidence behind the claim ids it cites (the ledger claim text and exact quotes from the sources). A unit is OK only if every specific fact in it (numbers, dates, names, rankings, comparisons) is stated by the evidence of the ids it cites. If not, rewrite the unit so it says only what that evidence supports, keeping its claim tags, language, Markdown and (for a table row) the same number of cells (write "—" in a cell the evidence does not support); if nothing useful remains, return an empty string. Return ONLY JSON {"units":[{"i":0,"ok":true},{"i":1,"ok":false,"why":"…","fixed":"…"}]}.`;
+  const sys = `You check citations in a research report. Each unit is a sentence or a Markdown table row, followed by the evidence behind the claim ids it cites (the ledger claim text and exact quotes from the sources).
+Flag a unit ONLY when it presents, as a sourced fact, something specific (a number, a date, a name, an event, an attributed motive) that the evidence of its cited ids contradicts or does not contain. Then rewrite it, changing as little as possible, so the sourced part says only what that evidence supports.
+Do NOT flag, and never remove:
+- links, addresses, handles, e-mail addresses and other pointers the reader can check by opening them. Never delete or shorten a URL or a contact channel, even when the evidence does not repeat it.
+- the team's own inference or judgement drawn from the evidence ("which suggests…", "not the lead author", "about 21 years old"). Reasoning is wanted. If it reads as if the source itself said it, keep the inference and mark it as the team's reading in the report's language (for example "our reading:" or "推断："), nothing more.
+- differences of wording, order or emphasis.
+Keep the unit's claim tags, language and Markdown, and for a table row the same number of cells. Return an empty "fixed" only when the whole unit is contradicted by its evidence. Return ONLY JSON {"units":[{"i":0,"ok":true},{"i":1,"ok":false,"why":"…","fixed":"…"}]}.`;
   const batches = [];
   for (let i = 0; i < units.length; i += 15) batches.push(units.slice(i, i + 15).map((u, k) => ({ i: i + k, u })));
   let flagged = 0, rewritten = 0, removed = 0;
