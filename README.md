@@ -89,3 +89,20 @@ The Topology tab of a run draws its agents on a ring, grouped by branch, and joi
 the other: a Room message naming the other agent, a re-opened source, a challenge to a claim, or an answer to a
 challenge. Hover an agent to see only its contacts. An orchestrated run shows a planner in the middle and one
 cluster per branch; a run without an orchestrator shows the red team reaching across the whole ring.
+
+## A Managed Agent as a seat of `sharednet goal run`
+
+`seat/` lets a team run by SharedNet's goal mode (a Room, a shared workspace, agents that wake each other) use
+Gemini Managed Agents as its seats. goal run drives a Gemini seat by running the Gemini CLI in the seat's
+container; `seat/gemini` stands where that CLI stands, with the same flags and the same event stream, so goal run
+itself is unchanged. On each wake it copies the workspace and the Room so far into the agent's remote sandbox,
+lets the agent take its turn there, copies back what the agent changed (`.jsonl` files are merged row by row),
+and says in the Room the lines the agent wrote in a `~~~~room` block.
+
+The agent's loop and tools run on Google's side, so a seat costs the host only a small process: 128 seats fit on
+a machine where 64 Gemini CLI seats were the limit.
+
+State of this code: the local half (snapshot, copy-back, Room lines, the event stream goal run reads) is tested
+with a stand-in agent (`MANAGED_SEAT_MOCK=1`), including a 128-seat goal run. The calls to the Managed Agents
+API follow the ones `swarm.mjs` uses, plus listing and downloading sandbox files, and have not yet been run
+against the live API.
