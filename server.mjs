@@ -118,6 +118,39 @@ function stream(req, res, id) {
   req.on("close", () => { closed = true; clearInterval(timer); clearInterval(ping); });
 }
 
+// Access code for requests that arrive through a public tunnel. A request made on this machine directly
+// (no proxy headers) is not asked for it. Starting a run spends the owner's API key, so the code is required
+// for every page, file and call, and wrong guesses are rate-limited.
+const CODE = (process.env.SWARM_ACCESS_CODE || "").trim();
+const TOKEN = CODE ? crypto.createHash("sha256").update("swarm:" + CODE).digest("hex").slice(0, 40) : "";
+const tries = new Map();
+const viaTunnel = (req) => Boolean(req.headers["cf-connecting-ip"] || req.headers["cf-ray"] || req.headers["x-forwarded-for"]);
+const hasAccess = (req) => (req.headers.cookie || "").split(/;\s*/).includes(`swarm_access=${TOKEN}`);
+const GATE_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><title>Prometheus on Gemini</title>
+<style>:root{--bg:#f7f6f2;--fg:#1a1a18;--muted:#6b6a64;--line:#d8d6ce}@media (prefers-color-scheme: dark){:root{--bg:#121212;--fg:#ecebe6;--muted:#9a9993;--line:#2e2e2c;color-scheme:dark}}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}form{width:min(360px,calc(100vw - 32px))}h1{font:500 28px/1.2 Georgia,serif;margin:0 0 6px}h1 i{color:var(--muted)}p{color:var(--muted);margin:0 0 22px}label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}.row{display:flex;gap:8px}input{flex:1;min-width:0;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit}button{font:inherit;padding:10px 18px;border:0;border-radius:6px;background:var(--fg);color:var(--bg);cursor:pointer}#err{min-height:1.5em;margin-top:10px;font-size:14px;color:#b3402a}</style></head><body>
+<form id="f" autocomplete="off"><h1>Prometheus <i>on Gemini</i></h1><p>Ask one question; a swarm of Gemini agents researches it. Enter the access code to use it.</p><label for="code">Access code</label><div class="row"><input id="code" autofocus required spellcheck="false"><button type="submit">Enter</button></div><div id="err" role="alert"></div></form>
+<script>document.getElementById('f').addEventListener('submit',async(e)=>{e.preventDefault();const err=document.getElementById('err');err.textContent='';try{const r=await fetch('/unlock?code='+encodeURIComponent(document.getElementById('code').value.trim()),{credentials:'same-origin'});if(r.ok)location.reload();else err.textContent=r.status===429?'Too many tries. Wait a few minutes.':'That code is not right.'}catch{err.textContent='Could not reach the server. Try again.'}});</script></body></html>`;
+function gate(req, res, p, url) {
+  if (!CODE || !viaTunnel(req)) return false;
+  res.setHeader("x-robots-tag", "noindex, nofollow");
+  if (p === "/unlock") {
+    const ip = String(req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || "?").split(",")[0].trim();
+    const nowMs = Date.now();
+    const mine = (tries.get(ip) || []).filter((t) => nowMs - t < 600_000);
+    const all = [...tries.values()].flat().filter((t) => nowMs - t < 600_000).length;
+    if (mine.length >= 8 || all >= 80) { send(res, 429, "Too many tries.", "text/plain"); return true; }
+    if ((url.searchParams.get("code") || "").trim() !== CODE) { mine.push(nowMs); tries.set(ip, mine); send(res, 401, "Wrong code.", "text/plain"); return true; }
+    res.setHeader("set-cookie", `swarm_access=${TOKEN}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${14 * 86400}`);
+    send(res, 204, "");
+    return true;
+  }
+  if (hasAccess(req)) return false;
+  if (!p.startsWith("/api/") && !/\.[a-z0-9]+$/i.test(p)) send(res, 401, GATE_PAGE, "text/html; charset=utf-8");
+  else send(res, 401, { error: "access code needed" });
+  return true;
+}
+
 function readBody(req) {
   return new Promise((ok, bad) => {
     let s = "";
@@ -131,6 +164,7 @@ http
     try {
       const url = new URL(req.url, "http://x");
       const p = url.pathname;
+      if (gate(req, res, p, url)) return;
       if (p === "/api/runs" && req.method === "GET") return send(res, 200, listRuns());
       if (p === "/api/runs" && req.method === "POST") return send(res, 200, { id: startRun(await readBody(req)) });
       let m = p.match(/^\/api\/runs\/([^/]+)\/stream$/);
