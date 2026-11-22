@@ -318,7 +318,7 @@ Rules:
 - quote is copied character-for-character from the page you opened. The system re-opens pages and searches for the quote; a quote it cannot find fails the whole submission.
 - The subject's own pages come first. When the question is about a specific organisation, product or person, what its own site, app, legal documents, job postings and filings say outranks any press report. Read them exhaustively rather than sampling: fetch sitemap.xml and robots.txt, try likely paths on every host you find, and when page reading returns little (a login page, a script-rendered page) use your sandbox shell: curl the page, read its HTML source, its title and meta tags, and the script files it loads, and look for product names, feature names, API routes and copy. The wording of a login page, a document in a trust centre, a job title, or a subprocessor list is evidence about what is being built: log it as a key claim and say in the room what it implies.
 - Check that a page is about the right subject: other organisations can share the name. Drop sources about a namesake.
-- The ledger is the only thing the writer reads. A finding you only mention in the room is lost. Whatever you learn that bears on THE QUESTION goes into the ledger as a claim with its source and quote, even when it is outside your own sub-questions; say in the room whose sub-question it helps.
+${criteriaText(run) ? `- What the final answer will be judged on, one criterion at a time, by an independent judge:\n${criteriaText(run).split("\n").map((l) => "    " + l).join("\n")}\n  Work so that the ledger can carry every one of these. If the ledger cannot yet support one (nobody has evidence for one side, a number has one source), say so in the room and go and get it.\n` : ""}- The ledger is the only thing the writer reads. A finding you only mention in the room is lost. Whatever you learn that bears on THE QUESTION goes into the ledger as a claim with its source and quote, even when it is outside your own sub-questions; say in the room whose sub-question it helps.
 - A page that needs a login, or that you cannot re-open, is still evidence: its address, its title, and the words on its sign-in screen say what exists. Log exactly what is visible (and how you saw it: the page itself, a search-engine snippet, or curl in your sandbox).
 - Time. Every claim says WHEN it was true. "kind" is "event" (something that happened on a date: a funding round, a release, a vote; it stays true forever), "state" (a condition that can change: who leads, what exists, what a price or score is, whether a problem is solved) or "forecast". "as_of" is the date the source shows it was true (the article's date, or the date named in the text), never today's date unless you saw it today on a live page. Put the date in the claim's text too ("As of March 2026, ...").
 - An old state is not the current state. For a key state claim whose as_of is more than ${STALE_DAYS} days before today, run ONE targeted search for what changed since (the subject plus the newest months, newest results first). If you find something newer, write the newer claim with its own as_of and keep the old one as history. If you find nothing, keep the claim and add "rechecked":{"on":"${today()}","found":"nothing newer"}. Either way you are then free to state it plainly with its date; do not hedge, and never write "may have changed" without having looked.
@@ -737,7 +737,7 @@ async function write(run, judgeNotes = "") {
 - Say plainly when a key number rests on a single publisher.
 - Time: write each time-sensitive statement with its date ("as of March 2026", "in September 2026") and lead with the latest known state. When the ledger shows a change over time, tell it as a short timeline, newest last. Never put an old state in the present tense. A state that was rechecked with nothing newer is stated plainly with its date; do not add hedges such as "may have changed" beyond that. Then give your best current reading in one sentence, with what it rests on.
 - When the question is about a specific organisation, product or person, give what its own pages, app, documents, job postings and filings show its own section near the top, including small clues (the wording of a login page, a trust-centre document, a job title) and what each implies; press reports come after.
-- Be concise: short is fine, shallow is not.`;
+- Be concise: short is fine, shallow is not.${criteriaText(run) ? `\nAn independent judge checks the report against these criteria, one at a time; meet each of them:\n${criteriaText(run)}` : ""}`;
   try {
     const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\n\n${ledgerDigest(run)}${judgeNotes ? `\n\nTHE JUDGE REFUSED THE LAST REPORT:\n${judgeNotes}` : ""}`, sys);
     run.totals.tokens += res.tokens;
@@ -759,7 +759,7 @@ async function writeBig(run, judgeNotes) {
     const sys = `You are the lead writer of a deep-research report written by a ${run.seats.length}-agent team. The branch sections are already written. Write in the language of the user's question, and output exactly two parts separated by a line containing only =====SECTIONS=====:
 PART 1: a "# " title, then the direct answer in 3-6 sentences, citing claim ids like [C3-1] from the sections. When the question is about a specific organisation, product or person, the answer must use what its own pages, app, documents, job postings and filings show (including small clues such as the wording of a login page), not only press reports.
 PART 2: "## Strongest contradicting evidence" (how it was weighed), "## Searched, not found", and "## Confidence" (high / medium / low with reasons, what could change, which key numbers rest on one publisher).
-Cite only ids present in the sections or the compact ledger. Never invent facts.`;
+Cite only ids present in the sections or the compact ledger. Never invent facts.${criteriaText(run) ? `\nAn independent judge checks the report against these criteria, one at a time; meet each of them:\n${criteriaText(run)}` : ""}`;
     // the lead reads every section (each cut to a share of the budget) and as much of the compact ledger as fits
     const per = Math.max(3000, Math.floor(1_400_000 / sections.length));
     const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\n\nSECTIONS:\n${sections.map((x) => fit(x, per)).join("\n\n")}\n\nCOMPACT LEDGER:\n${fit(ledgerDigest(run, { compact: true }), 1_000_000)}${judgeNotes ? `\n\nTHE JUDGE REFUSED THE LAST REPORT:\n${judgeNotes}` : ""}`, sys);
@@ -776,25 +776,71 @@ Cite only ids present in the sections or the compact ledger. Never invent facts.
   }
 }
 
+// What done means for THIS question: written once from the question itself, shown to every agent, and judged
+// one criterion at a time. Nothing about the form of the answer is hard-coded: if the person asked whether
+// something will happen, a clear answer to that is a criterion because they asked it.
+async function criteria(run) {
+  const file = path.join(run.dir, "criteria.json");
+  if (fs.existsSync(file)) { run.criteria = JSON.parse(fs.readFileSync(file, "utf8")); return; }
+  const fallback = ["The report answers each thing the question asks, clearly and near the top.", "Every key number or fact is backed by two independent sources or plainly marked single-source.", "It presents the strongest evidence against its answer and says how it was weighed.", "It says what was searched for and not found.", "It states its confidence with the specific evidence and limits behind it."];
+  const sys = `You write the criteria a research report will be judged on, for one question. Three to six concrete criteria a judge can check against the report itself, in the language of the question.
+- First: what the person asked for, in their words. Name each thing the question asks (each "what", "how many", "will", "which", "when") and require a clear answer to each, in the form the question asks for, where the reader finds it first. When the question asks for a judgement or a forecast, the criterion is a clear answer to it that separates what is known from what is forecast and says how sure, with the evidence and limits behind that.
+- The rest are bars of depth with numbers fitted to this question, which a judge can count: at least how many independent sources and which kinds count for this question (copies of one story count once); every key date, number or fact backed by two independent sources or plainly marked single-source; the strongest evidence on each side with at least how many sources; what was searched for and not found; anything else this particular question needs (a timeline that separates confirmed events from disputed ones, a table, a range).
+One bar per criterion. Never write a criterion about process or tools. Return ONLY JSON {"criteria":["..."]}.`;
+  try {
+    const res = await modelCall(`QUESTION (today is ${today()}):\n${run.req.question}`, sys);
+    run.totals.tokens += res.tokens;
+    const c = (JSON.parse((res.text.match(/\{[\s\S]*\}/) || ["{}"])[0]).criteria || []).filter((x) => typeof x === "string" && x.trim()).slice(0, 6);
+    run.criteria = c.length >= 3 ? c : fallback;
+  } catch { run.criteria = fallback; }
+  fs.writeFileSync(file, JSON.stringify(run.criteria, null, 1));
+  run.emit({ t: "criteria", items: run.criteria });
+}
+const criteriaText = (run) => (run.criteria?.length ? run.criteria.map((c, i) => `${i + 1}. ${c}`).join("\n") : "");
+
+function evidenceCounts(run) {
+  const v = run.view();
+  const pubs = (c) => new Set(v.sourcesOf(c.id).filter((x) => x.stance !== "contradicts").map((x) => (x.publisher || "").toLowerCase().trim()).filter(Boolean)).size;
+  const sources = [...v.sources.values()].filter(v.kept);
+  return {
+    sources: sources.length,
+    independent_publishers: new Set(sources.map((x) => (x.publisher || "").toLowerCase().trim()).filter(Boolean)).size,
+    key_claims: v.keyClaims.length,
+    key_claims_with_two_publishers: v.keyClaims.filter((c) => pubs(c) >= 2).length,
+    key_claims_marked_single_source: v.keyClaims.filter((c) => c.single_source).length,
+    contradicting_sources: sources.filter((x) => x.stance === "contradicts").length,
+    not_found_notes: v.notFound.length,
+    key_claims_with_confirmed_check: v.keyClaims.filter((c) => v.sourcesOf(c.id).some((x) => v.checksOf(x.id).some((k) => k.result === "confirmed"))).length,
+    open_challenges: v.openChallenges.length,
+  };
+}
+
 async function judge(run, attempt, report) {
   run.emit({ t: "phase", name: "judge", round: attempt });
   const v = run.view();
   const tags = tagsIn(report);
   const bad = tags.filter((t) => !v.claims.has(t) || !v.kept(v.claims.get(t)));
-  const uncited = v.keyClaims.filter((c) => !tags.includes(c.id)).map((c) => c.id);
-  const sys = `You are an independent, strict judge of a deep-research report. Check: does it answer the user's question directly; is every key statement tagged with a ledger claim id and supported by that claim's sources and quotes; does it address the strongest contradicting evidence; does it say what was searched but not found; does it state confidence with reasons; are single-source numbers disclosed; anything shallow, stale, or overstated? Return ONLY JSON {"pass":true|false,"problems":["..."]}.`;
-  let pass = false, notes = "";
+  const list = run.criteria?.length ? run.criteria : ["The report answers each thing the question asks, clearly and near the top."];
+  const sys = `You are the judge of a research report written by a team of agents. You are not on the team. You decide, criterion by criterion, whether the report meets what the person asked for.
+For every criterion, in order:
+- met: true only when the report itself clearly satisfies the criterion as written. A promise, a placeholder, or an answer the reader has to dig out of a long passage does not satisfy a criterion that asks for a clear answer: the answer must be stated where the reader finds it first.
+- For a criterion that sets a number (sources, publishers, evidence on each side), count from the EVIDENCE COUNTS and the ledger, not from what the report says about itself.
+- A key fact the report states must follow from the quoted passage of a source attached to the claim it cites; when the quotes do not say it, the criterion it serves is not met.
+- evidence: one or two sentences on where the report meets it, or what you found instead. missing: what exactly is missing, empty when met.
+Judge only against the question and its criteria; do not add requirements of your own. When you cannot tell whether a criterion is met, it is not met. Return ONLY JSON {"checks":[{"criterion":1,"met":true,"evidence":"...","missing":""}]}.`;
+  let pass = false, notes = "", checks = [];
   try {
-    const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\n\nREPORT:\n${fit(report, 1_600_000)}\n\nLEDGER:\n${fit(ledgerDigest(run, { compact: run.seats.length > 24 }), 1_200_000)}\n\nAutomatic checks: tags not in ledger: ${bad.join(", ") || "none"}; key claims not cited: ${uncited.join(", ") || "none"}.`, sys);
+    const res = await modelCall(`QUESTION: ${run.req.question}\nToday: ${today()}\n\nCRITERIA:\n${list.map((c, i) => `${i + 1}. ${c}`).join("\n")}\n\nEVIDENCE COUNTS: ${JSON.stringify(evidenceCounts(run))}\nClaim ids cited in the report that are not in the ledger: ${bad.join(", ") || "none"}.\n\nREPORT:\n${fit(report, 1_600_000)}\n\nLEDGER:\n${fit(ledgerDigest(run, { compact: run.seats.length > 24 }), 1_200_000)}`, sys);
     run.totals.tokens += res.tokens;
     const j = JSON.parse((res.text.match(/\{[\s\S]*\}/) || ["{}"])[0]);
-    pass = !!j.pass && bad.length === 0;
-    notes = [...(bad.length ? [`report cites ids not in the ledger: ${bad.join(", ")}`] : []), ...(j.problems || [])].join("\n");
+    checks = list.map((c, i) => { const k = (j.checks || []).find((x) => Number(x.criterion) === i + 1) || {}; return { criterion: c, met: k.met === true, evidence: String(k.evidence || ""), missing: String(k.missing || (k.met === true ? "" : "the judge gave no answer for this criterion")) }; });
+    pass = checks.every((k) => k.met) && bad.length === 0;
+    notes = [...(bad.length ? [`report cites ids not in the ledger: ${bad.join(", ")}`] : []), ...checks.filter((k) => !k.met).map((k) => `NOT MET: ${k.criterion}\n  missing: ${k.missing}`)].join("\n");
   } catch (e) {
     notes = `judge error: ${String(e.message).slice(0, 200)}`;
   }
-  run.emit({ t: "judge", attempt, pass, notes });
-  run.say("J", pass ? "Passed." : `Not yet:\n${notes}`);
+  run.emit({ t: "judge", attempt, pass, notes, checks });
+  run.say("J", pass ? `Passed: all ${checks.length} criteria met.` : `Not yet:\n${notes}`);
   return { pass, notes };
 }
 
@@ -857,7 +903,8 @@ async function mockTurn(seat, input) {
 async function mockModel(input, system) {
   await sleep(500);
   if (system.includes("plan deep research")) return { text: JSON.stringify({ questions: [1, 2, 3, 4, 5, 6].map((i) => ({ id: `Q0-${i}`, text: `Mock sub-question ${i}`, parent: null })) }), id: "mock_p", searches: [], urls: [], tokens: 100 };
-  if (system.includes("judge")) return { text: '{"pass":true,"problems":[]}', id: "mock_j", searches: [], urls: [], tokens: 100 };
+  if (system.includes("criteria a research report will be judged on")) return { text: '{"criteria":["Mock: a clear answer to the question, first.","Mock: two sources per key fact.","Mock: evidence against."]}', id: "mock_c", searches: [], urls: [], tokens: 100 };
+  if (system.includes("You are the judge")) return { text: '{"checks":[{"criterion":1,"met":true,"evidence":"mock"},{"criterion":2,"met":true,"evidence":"mock"},{"criterion":3,"met":true,"evidence":"mock"}]}', id: "mock_j", searches: [], urls: [], tokens: 100 };
   const ids = [...new Set(input.match(/C\d+-\d+/g) || [])];
   return { text: `# Mock report\n\nAnswer. ${ids.map((i) => `[${i}]`).join(" ")}\n\n## Confidence\nMedium.`, id: "mock_w", searches: [], urls: [], tokens: 100 };
 }
@@ -999,7 +1046,7 @@ async function writeOutlined(run) {
     const lead = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\n\nSECTIONS:\n${parts.join("\n\n")}\n\nCOMPACT LEDGER:\n${ledgerDigest(run, { compact: true })}`, `You are the lead writer of a deep-research report written by a ${run.seats.length}-agent team. The sections are already written. Write in the language of the user's question, and output exactly two parts separated by a line containing only =====SECTIONS=====:
 PART 1: a "# " title, then the direct answer in 3-6 sentences, citing claim ids like [C3-1] from the sections. When the question is about a specific organisation, product or person, the answer must use what its own pages, app, documents, job postings and filings show (including small clues such as the wording of a login page), not only press reports.
 PART 2: "## Strongest contradicting evidence" (how it was weighed), "## Searched, not found", and "## Confidence" (high / medium / low with reasons, what could change, which key numbers rest on one publisher).
-Cite only ids present in the sections or the compact ledger. Never invent facts.`);
+Cite only ids present in the sections or the compact ledger. Never invent facts.${criteriaText(run) ? `\nAn independent judge checks the report against these criteria, one at a time; meet each of them:\n${criteriaText(run)}` : ""}`);
     run.totals.tokens += lead.tokens;
     const [head, tail = ""] = lead.text.split(/^=====SECTIONS=====\s*$/m);
     const report = `${head.trim()}\n\n${parts.join("\n\n")}\n\n${tail.trim()}\n`;
@@ -1046,6 +1093,7 @@ async function freeRun(run, R, X) {
   const base = run.req.baseline_from ? baselineFrom(run, run.req.baseline_from) : baseline(run);
   let status = "ended";
   try {
+    await criteria(run);
     phaseOnce(run, "research", 1);
     run.say("system", `No orchestrator. ${R} researchers and ${X} red-team judges each run their own loop and coordinate on this board. The run stops when ${Math.round(QUORUM * 100)}% of the judges vote to stop, or when the time budget runs out.`);
     const loops = run.seats.filter((s) => ["researcher", "redteam"].includes(s.role)).map((s) => seatLoop(run, s));
@@ -1092,6 +1140,7 @@ async function main() {
   if (from === "write") return resumeAtWrite(run);
   if (from === "baseline") { run.req.baseline = true; return baseline(run); }
   if (from === "verify") return verifyOnly(run);
+  if (from === "judge") { loadState(run); await criteria(run); return void (await judge(run, 9, fs.readFileSync(path.join(run.dir, process.env.JUDGE_REPORT || "report.md"), "utf8"))); }
   if (from === "bottomline") { loadState(run); const f = path.join(run.dir, "report.md"); return void (await bottomLine(run, fs.readFileSync(f, "utf8"))); }
   // team size: `agents` = researchers + red team (8..128); older requests give the two counts
   let R, X;
@@ -1117,6 +1166,7 @@ async function main() {
   const base = baseline(run);
   let status = "ended";
   try {
+    await criteria(run);
     await plan(run);
     await Promise.all(run.branches.map((b) => branchPipeline(run, b)));
     let g = { pass: false, problems: [] };
@@ -1163,7 +1213,7 @@ async function bottomLine(run, report) {
 - <reason 2>
 - <reason 3>
 - What would change it: <one line>
-Rules for the verdict: answer each thing the question asks. A yes/no or "will it" question starts with Yes, No, Probably yes or Probably not, followed by a probability in per cent when the report supports one. A "how much / how many / when" question gives the number or date with its range. The verdict is at most 25 words and leads with the part of the question that asks for a judgement or a forecast (will, should, which, how many, when); the facts the question also asks for go in the bullets. Commit to the most likely answer: do not answer "it depends" or "unclear" unless the report itself finds the evidence evenly split, and then say which way it leans.`;
+The verdict answers what the person asked, in the form they asked it: read the question and the criteria below and answer each thing it asks, starting with the judgement or forecast if it asks for one (a question that asks whether something will happen gets a plain yes or no and how sure the report is, in the report's own terms; a question that asks how many gets the number and its range). Keep it short enough to read at a glance; facts the question also asks for go in the bullets. Say what the report concludes; do not soften it beyond what the report says, and do not sharpen it either.${criteriaText(run) ? `\nCRITERIA THE REPORT IS JUDGED ON:\n${criteriaText(run)}` : ""}`;
   try {
     const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\n\nREPORT, OPENING:\n${head}\n\nREPORT, CLOSING SECTIONS:\n${fit(report.slice(tailAt), 60000)}`, sys);
     run.totals.tokens += res.tokens;
@@ -1258,6 +1308,8 @@ function loadState(run) {
     if (e.t === "msg") run.room.push({ seat: e.seat, text: e.text, at: e.at });
     if (e.t === "turn" && e.status === "completed") { run.totals.tokens += e.tokens || 0; run.totals.searches += (e.searches || []).length; run.totals.urls_opened += (e.urls || []).length; run.totals.turns += 1; }
   }
+  const cf = path.join(run.dir, "criteria.json");
+  if (fs.existsSync(cf)) run.criteria = JSON.parse(fs.readFileSync(cf, "utf8"));
   return evs;
 }
 

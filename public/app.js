@@ -378,6 +378,10 @@ function handle(ev, animate) {
         $$('#rail li').forEach((li) => { if (['plan', 'crosscheck', 'redteam', 'fix'].includes(li.dataset.p)) li.remove(); else if (li.dataset.p === 'research') li.textContent = 'Agents loop'; else if (li.dataset.p === 'gate') li.textContent = 'Judges stop it'; });
       }
       break;
+    case 'criteria':
+      S.criteria = ev.items || [];
+      roomAdd(simpleLine(ev, `<b>What the answer will be judged on</b><ol>${S.criteria.map((c) => `<li>${esc(c)}</li>`).join('')}</ol>`), animate);
+      break;
     case 'vote':
       S.votes = { yes: ev.yes, of: ev.of };
       roomAdd(simpleLine(ev, `<span class="seat" style="${seatVars(ev.seat)}">${esc(ev.seat)}</span> votes ${ev.terminate ? '<b class="pass">stop</b>' : '<b>keep going</b>'} <span class="faint">${esc(ev.yes)}/${esc(ev.of)} to stop · ${esc(ev.why || '')}</span>`), animate);
