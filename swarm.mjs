@@ -1247,6 +1247,7 @@ async function main() {
   if (from === "write") return resumeAtWrite(run);
   if (from === "baseline") { run.req.baseline = true; return baseline(run); }
   if (from === "verify") return verifyOnly(run);
+  if (from === "files") return filesOnly(run);
   if (from === "review") { loadState(run); await criteria(run); return void (await reviewLoop(run, fs.readFileSync(path.join(run.dir, "report.md"), "utf8"))); }
   if (from === "judge") { loadState(run); await criteria(run); return void (await judge(run, 9, fs.readFileSync(path.join(run.dir, process.env.JUDGE_REPORT || "report.md"), "utf8"))); }
   if (from === "bottomline") { loadState(run); const f = path.join(run.dir, "report.md"); return void (await bottomLine(run, fs.readFileSync(f, "utf8"))); }
@@ -1505,6 +1506,79 @@ function evidenceFor(run, ids) {
     .join("\n");
 }
 
+// File names in the report that are not among the attached files. A report on attached material names files all
+// the time (`sections/intro.tex:L40`); a name that matches nothing there is either a file the team says is missing
+// (fine) or one it says it read (not possible). Only names whose first folder exists in the attachments are
+// judged, so paths on the web or inside quoted code are left alone.
+function attachedPaths() {
+  const files = new Set(), dirs = new Set();
+  const walk = (d, rel) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) { dirs.add(e.name); walk(path.join(d, e.name), r); } else files.add(r);
+    }
+  };
+  walk(ATTACH.dir, "");
+  return { files: [...files], dirs };
+}
+function unknownAttachmentPaths(report, files, dirs) {
+  const out = new Set();
+  for (const m of report.matchAll(/`([^`\n]{3,200})`/g)) {
+    let t = m[1].trim().replace(/^attachment:\/*/, "").replace(/^\/?attachments\//, "").replace(/[#:]L?\d[\dL,\s–-]*$/, "").replace(/^\.\//, "");
+    if (!/^[\w.@-]+(\/[\w.@\[\]-]+)+$/.test(t) || !/\.[A-Za-z0-9]{1,8}$/.test(t)) continue;   // a plain path that ends in a file extension
+    if (!dirs.has(t.split("/")[0])) continue;
+    if (!files.some((f) => f === t || f.endsWith("/" + t))) out.add(t);
+  }
+  return [...out];
+}
+async function checkNamedFiles(run, report) {
+  if (!ATTACH) return report;
+  const { files, dirs } = attachedPaths();
+  const unknown = unknownAttachmentPaths(report, files, dirs);
+  if (!unknown.length) return report;
+  // the sentences that name such a file, each judged with the fact that the file is not there
+  const sentences = [];
+  for (const line of report.split("\n")) {
+    if (!unknown.some((u) => line.includes(u))) continue;
+    for (const sent of line.split(/(?<=[。！？!?；;])|(?<=\.)\s+(?=[A-Z\u4e00-\u9fff*`(])/)) {
+      const names = unknown.filter((u) => sent.includes(u));
+      if (names.length && sent.trim().length > 12 && !sentences.some((x) => x.sent === sent)) sentences.push({ sent, names });
+    }
+  }
+  const sys = `A research team wrote a report about files a person attached. Each UNIT is one sentence of the report, with the names of files it mentions that are NOT among the attached files (checked on disk; the list of attached files is exact).
+A sentence that says such a file is missing, absent, not included, referenced but not shipped, or needed is correct: leave it. So is a sentence that proposes creating the file, or that names a file a run produced in its own workspace rather than an attached file: leave it.
+When CLOSEST ATTACHED FILES lists a file with the same name under another folder and the sentence clearly means that file, the path was only shortened or mistyped: correct the path to the listed one and change nothing else.
+A sentence that says the team read, opened, used, cross-checked, computed from, or found something in such a file cannot be true. Correct only that part: say what the sentence can truthfully say (that the file is not in the attached material, so this step was not done from it), and keep every other fact, number, claim tag, the language and the Markdown. If the sentence gives a result that could only have come from that file, say the result is not verified from the attached files.
+Return ONLY JSON {"units":[{"i":0,"ok":true},{"i":1,"ok":false,"fixed":"…"}]}.`;
+  let fixed = 0, unchecked = 0, out = report;
+  for (let i = 0; i < sentences.length; i += 12) {
+    const batch = sentences.slice(i, i + 12);
+    // one more try when the model's answer cannot be read; a batch that fails twice is reported, not passed over
+    for (let attempt = 1; attempt <= 2; attempt++) try {
+      // attached files with the same name, the ones sharing the most trailing folders first
+      const closest = (name) => {
+        const want = name.split("/").reverse();
+        const shared = (f) => { const have = f.split("/").reverse(); let n = 0; while (n < want.length && have[n] === want[n]) n++; return n; };
+        return files.map((f) => [shared(f), f]).filter(([n]) => n >= 1).sort((a, b) => b[0] - a[0]).slice(0, 3).map(([, f]) => f);
+      };
+      const res = await modelCall(batch.map((x, k) => `UNIT ${i + k}:\n${x.sent}\nNOT AMONG THE ATTACHED FILES: ${x.names.join(", ")}\nCLOSEST ATTACHED FILES: ${x.names.map((n) => `${n} -> ${closest(n).join(" | ") || "none with this name"}`).join("; ")}`).join("\n\n"), sys);
+      run.totals.tokens += res.tokens;
+      const j = JSON.parse((res.text.match(/\{[\s\S]*\}/) || ["{}"])[0]);
+      if (!Array.isArray(j.units)) throw new Error("the answer had no units");
+      for (const r of j.units || []) if (r && r.ok === false && typeof r.fixed === "string" && r.fixed.trim() && sentences[r.i]) {
+        // the sentence keeps the indentation and spacing it had in the report
+        const was = sentences[r.i].sent;
+        out = out.split(was).join(was.match(/^\s*/)[0] + r.fixed.trim() + was.match(/\s*$/)[0]);
+        fixed++;
+      }
+      break;
+    } catch (e) { if (attempt === 2) { unchecked += batch.length; console.error("file-name check failed:", String(e.message || e).slice(0, 200)); } }
+  }
+  run.emit({ t: "files_check", unknown, sentences: sentences.length, fixed, unchecked });
+  run.say("W", `The report names ${unknown.length} file${unknown.length === 1 ? "" : "s"} that ${unknown.length === 1 ? "is" : "are"} not among the attached files (${unknown.slice(0, 6).join(", ")}${unknown.length > 6 ? ", …" : ""}). ${sentences.length} sentence${sentences.length === 1 ? "" : "s"} checked; ${fixed} said the team had used one and ${fixed === 1 ? "was" : "were"} corrected.${unchecked ? ` ${unchecked} could not be checked.` : ""}`);
+  return out;
+}
+
 async function verifyReport(run, report) {
   const units = citedUnits(report);
   if (!units.length) return report;
@@ -1542,6 +1616,7 @@ Keep the unit's claim tags, language and Markdown, and for a table row the same 
     out = out.split(units[i]).join(fixed);
   }
   out = out.replace(/\n{3,}/g, "\n\n");
+  if (!MOCK) out = await checkNamedFiles(run, out);
   run.emit({ t: "turn", seat: "W", phase: "verify", status: "completed", searches: [], urls: [], tokens: 0, ms: Date.now() - t0, error: null });
   run.emit({ t: "verify", checked: units.length, flagged, rewritten, removed });
   run.say("W", `Checked ${units.length} cited sentences against the quotes behind their tags: ${flagged} said more than their evidence (${rewritten} rewritten, ${removed} removed).`);
@@ -1568,6 +1643,20 @@ function loadState(run) {
   const cf = path.join(run.dir, "criteria.json");
   if (fs.existsSync(cf)) run.criteria = JSON.parse(fs.readFileSync(cf, "utf8"));
   return evs;
+}
+
+// re-check only the file names in an existing report (keeps the report as it was in report.prefiles.md)
+async function filesOnly(run) {
+  loadState(run);
+  if (!ATTACH) return void run.say("W", "This run has no attached files, so there are no file names to check.");
+  const f = path.join(run.dir, "report.md");
+  const before = fs.readFileSync(f, "utf8");
+  const after = await checkNamedFiles(run, before);
+  if (after !== before) {
+    fs.writeFileSync(path.join(run.dir, "report.prefiles.md"), before);
+    fs.writeFileSync(f, after);
+    run.emit({ t: "report" });
+  }
 }
 
 // re-check an existing report's citations (keeps the original as report.v1.md)

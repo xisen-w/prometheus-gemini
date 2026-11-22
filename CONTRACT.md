@@ -45,3 +45,7 @@ A later row with the same `id` replaces the earlier one (latest wins).
 - `GET /api/runs/<id>/stream` → Server-Sent Events: every line of events.ndjson as `data: <json>\n\n` (replays from the start, then tails until `done`).
 - `GET /api/runs/<id>/file/<name>` → `report.md`, `baseline.md`, `ledger.jsonl`, `events.ndjson`.
 - Static files from `public/` at `/`; `/run/<id>` serves `public/index.html` too (the page reads the id from the path).
+
+## File names in a report on attached files
+
+After the citation check, a run with attached files compares every file path the report names (in backticks) with the attached files. Sentences that name a file that is not there are judged one by one: saying a file is missing is left alone, a shortened path is corrected to the real one, and a sentence that says the team read or used such a file is corrected. The event is `{"t":"files_check","unknown":[paths],"sentences":n,"fixed":n,"unchecked":n}`. `node swarm.mjs --run <id> --from files` runs only this step on a finished report and keeps the earlier text in `report.prefiles.md`.
