@@ -695,17 +695,26 @@ function ledgerDigest(run, { branch = null, compact = false } = {}) {
   return `QUESTIONS AND ANSWERS\n${qs.join("\n")}\n\nCLAIMS WITH SOURCES AND CHECKS\n${cd}\n\nSEARCHED, NOT FOUND\n${nf.join("\n") || "(none)"}\n\nRED-TEAM CHALLENGES\n${ch.join("\n") || "(none)"}`;
 }
 
+// cut a text to a character budget (about 4 characters per token) so huge runs stay inside the model's input window
+const fit = (text, max) => (text.length <= max ? text : text.slice(0, max) + `\n… [cut: ${text.length - max} more characters not shown]`);
+
 async function writeSections(run, judgeNotes) {
+  const dir = path.join(run.dir, "sections");
+  fs.mkdirSync(dir, { recursive: true });
   const sys = `You write ONE section of a deep-research report from the evidence ledger of one research branch. Write in the language of the user's question. Start with a "## " heading (the branch title). Every sentence that states a ledger claim ends with its id in square brackets, like [C12-3]; cite only ids in this ledger, invent nothing. Link only URLs from the ledger. Name contradicting evidence and how it was weighed; say plainly when a key number rests on one publisher. Write each time-sensitive statement with its date and lead with the latest known state; a change over time is a short timeline, newest last; never put an old state in the present tense, and do not add hedges beyond the date. Dense and concrete; no preamble.`;
   const parts = await Promise.all(
     run.branches.map(async (b) => {
+      const saved = path.join(dir, `${b.id}.md`);
+      // a section already written (an earlier attempt that failed later) is reused
+      if (!judgeNotes && fs.existsSync(saved)) return fs.readFileSync(saved, "utf8");
       try {
-        const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\nBRANCH ${b.id}: ${b.title}: ${b.scope}\n\n${ledgerDigest(run, { branch: b.id })}${judgeNotes ? `\n\nJUDGE NOTES ON THE LAST REPORT:\n${judgeNotes}` : ""}`, sys);
+        const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\nBRANCH ${b.id}: ${b.title}: ${b.scope}\n\n${fit(ledgerDigest(run, { branch: b.id }), 2_400_000)}${judgeNotes ? `\n\nJUDGE NOTES ON THE LAST REPORT:\n${judgeNotes}` : ""}`, sys);
         run.totals.tokens += res.tokens;
         const md = res.text.trim();
         const first = md.split("\n").filter((l) => l.trim() && !l.startsWith("#"))[0] || "";
         const claims = tagsIn(md);
         run.addRows("W", [{ type: "answer", question: b.id, status: "answered", text: stripTags(first).slice(0, 600), claims, by: "W", at: now() }]);
+        fs.writeFileSync(saved, md);
         return md;
       } catch (e) {
         return `## ${b.title}\n\n(section writer failed: ${String(e.message).slice(0, 120)})`;
@@ -751,7 +760,9 @@ async function writeBig(run, judgeNotes) {
 PART 1: a "# " title, then the direct answer in 3-6 sentences, citing claim ids like [C3-1] from the sections. When the question is about a specific organisation, product or person, the answer must use what its own pages, app, documents, job postings and filings show (including small clues such as the wording of a login page), not only press reports.
 PART 2: "## Strongest contradicting evidence" (how it was weighed), "## Searched, not found", and "## Confidence" (high / medium / low with reasons, what could change, which key numbers rest on one publisher).
 Cite only ids present in the sections or the compact ledger. Never invent facts.`;
-    const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\n\nSECTIONS:\n${sections.join("\n\n")}\n\nCOMPACT LEDGER:\n${ledgerDigest(run, { compact: true })}${judgeNotes ? `\n\nTHE JUDGE REFUSED THE LAST REPORT:\n${judgeNotes}` : ""}`, sys);
+    // the lead reads every section (each cut to a share of the budget) and as much of the compact ledger as fits
+    const per = Math.max(3000, Math.floor(1_400_000 / sections.length));
+    const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\n\nSECTIONS:\n${sections.map((x) => fit(x, per)).join("\n\n")}\n\nCOMPACT LEDGER:\n${fit(ledgerDigest(run, { compact: true }), 1_000_000)}${judgeNotes ? `\n\nTHE JUDGE REFUSED THE LAST REPORT:\n${judgeNotes}` : ""}`, sys);
     run.totals.tokens += res.tokens;
     const [head, tail = ""] = res.text.split(/^=====SECTIONS=====\s*$/m);
     const report = `${head.trim()}\n\n${sections.join("\n\n")}\n\n${tail.trim()}\n`;
@@ -774,7 +785,7 @@ async function judge(run, attempt, report) {
   const sys = `You are an independent, strict judge of a deep-research report. Check: does it answer the user's question directly; is every key statement tagged with a ledger claim id and supported by that claim's sources and quotes; does it address the strongest contradicting evidence; does it say what was searched but not found; does it state confidence with reasons; are single-source numbers disclosed; anything shallow, stale, or overstated? Return ONLY JSON {"pass":true|false,"problems":["..."]}.`;
   let pass = false, notes = "";
   try {
-    const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\n\nREPORT:\n${report}\n\nLEDGER:\n${ledgerDigest(run, { compact: run.seats.length > 24 })}\n\nAutomatic checks: tags not in ledger: ${bad.join(", ") || "none"}; key claims not cited: ${uncited.join(", ") || "none"}.`, sys);
+    const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\n\nREPORT:\n${fit(report, 1_600_000)}\n\nLEDGER:\n${fit(ledgerDigest(run, { compact: run.seats.length > 24 }), 1_200_000)}\n\nAutomatic checks: tags not in ledger: ${bad.join(", ") || "none"}; key claims not cited: ${uncited.join(", ") || "none"}.`, sys);
     run.totals.tokens += res.tokens;
     const j = JSON.parse((res.text.match(/\{[\s\S]*\}/) || ["{}"])[0]);
     pass = !!j.pass && bad.length === 0;
@@ -1053,6 +1064,7 @@ async function freeRun(run, R, X) {
     await Promise.race([Promise.allSettled(loops), sleep(GRACE_MS)]);
     const g = await gate(run, 1); // not a blocker here: recorded to compare with the orchestrated mode
     let report = N > 24 ? (run.emit({ t: "phase", name: "write", round: 1 }), await writeOutlined(run)) : await write(run);
+    if (report) report = await bottomLine(run, report);
     if (report) report = await verifyReport(run, report);
     if (report) {
       const j = await judge(run, 1, report);
@@ -1080,6 +1092,7 @@ async function main() {
   if (from === "write") return resumeAtWrite(run);
   if (from === "baseline") { run.req.baseline = true; return baseline(run); }
   if (from === "verify") return verifyOnly(run);
+  if (from === "bottomline") { loadState(run); const f = path.join(run.dir, "report.md"); return void (await bottomLine(run, fs.readFileSync(f, "utf8"))); }
   // team size: `agents` = researchers + red team (8..128); older requests give the two counts
   let R, X;
   if (run.req.agents) {
@@ -1116,6 +1129,7 @@ async function main() {
       if (g.pass || run.minutesLeft() < 6) break;
     }
     let report = await write(run);
+    if (report) report = await bottomLine(run, report);
     if (report) report = await verifyReport(run, report);
     for (let attempt = 1; report && attempt <= 2; attempt++) {
       const j = await judge(run, attempt, report);
@@ -1123,6 +1137,7 @@ async function main() {
       if (run.minutesLeft() < 3) break;
       await fix(run, 10 + attempt, j.notes.split("\n"));
       report = await write(run, j.notes);
+      if (report) report = await bottomLine(run, report);
       if (report) report = await verifyReport(run, report);
     }
   } catch (e) {
@@ -1132,6 +1147,37 @@ async function main() {
   await Promise.race([base, sleep(Math.max(0, run.deadline + 10 * 60_000 - Date.now()))]);
   run.emit({ t: "phase", name: "done", round: 1 });
   run.emit({ t: "done", status, totals: { ...run.totals, minutes: Math.round((Date.now() - run.started) / 6000) / 10 } });
+}
+
+// ---------------------------------------------------------------- the answer first
+// A reader who asked "will he be back or not?" must find Yes or No in the first line, not in the fifth
+// sentence of a long paragraph. After the report is written, Argon states the verdict from the report itself
+// and it is placed directly under the title.
+async function bottomLine(run, report) {
+  if (/^\*\*Bottom line/m.test(report.slice(0, 4000))) return report;
+  const head = report.slice(0, 9000);
+  const tailAt = Math.max(report.lastIndexOf("## Strongest contradicting"), report.lastIndexOf("## Confidence"), report.length - 14000);
+  const sys = `You write the bottom line of a research report: the direct answer to the user's question, placed above everything else. Use only what the report says. Write in the language of the user's question. Output exactly this Markdown and nothing else:
+**Bottom line: <the verdict in one short sentence>**
+- <reason 1, one line, with its claim ids in square brackets as in the report>
+- <reason 2>
+- <reason 3>
+- What would change it: <one line>
+Rules for the verdict: answer each thing the question asks. A yes/no or "will it" question starts with Yes, No, Probably yes or Probably not, followed by a probability in per cent when the report supports one. A "how much / how many / when" question gives the number or date with its range. The verdict is at most 25 words and leads with the part of the question that asks for a judgement or a forecast (will, should, which, how many, when); the facts the question also asks for go in the bullets. Commit to the most likely answer: do not answer "it depends" or "unclear" unless the report itself finds the evidence evenly split, and then say which way it leans.`;
+  try {
+    const res = await modelCall(`USER QUESTION: ${run.req.question}\nToday: ${today()}\n\nREPORT, OPENING:\n${head}\n\nREPORT, CLOSING SECTIONS:\n${fit(report.slice(tailAt), 60000)}`, sys);
+    run.totals.tokens += res.tokens;
+    const block = res.text.trim().replace(/^```\w*\n?|```$/g, "").trim();
+    if (!/^\*\*Bottom line/.test(block)) return report;
+    const nl = report.indexOf("\n");
+    const out = report.startsWith("# ") && nl > 0 ? `${report.slice(0, nl)}\n\n${block}\n${report.slice(nl)}` : `${block}\n\n${report}`;
+    fs.writeFileSync(path.join(run.dir, "report.md"), out);
+    run.say("W", block.split("\n")[0].replace(/\*\*/g, ""));
+    run.emit({ t: "report" });
+    return out;
+  } catch (e) {
+    return report;
+  }
 }
 
 // ---------------------------------------------------------------- citation check after writing

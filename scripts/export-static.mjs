@@ -62,6 +62,8 @@ const runs = [];
 for (const id of fs.readdirSync(path.join(ROOT, "runs")).filter((d) => /^r_[A-Za-z0-9_]+$/.test(d)).sort()) {
   const dir = path.join(ROOT, "runs", id);
   const evFile = path.join(dir, "events.ndjson");
+  // a run marked private (a file named "private" in its folder) is never published
+  if (fs.existsSync(path.join(dir, "private"))) continue;
   if (!fs.existsSync(evFile) || !fs.existsSync(path.join(dir, "report.md"))) continue;
   const text = fs.readFileSync(evFile, "utf8");
   const done = text.split("\n").filter((l) => l.includes('"t":"done"')).map((l) => JSON.parse(l)).pop();
