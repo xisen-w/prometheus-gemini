@@ -78,6 +78,19 @@ function startRun(body) {
     ...(/^[A-Za-z0-9_-]{1,64}$/.test(body.baseline_from || "") ? { baseline_from: body.baseline_from } : {}),
     created_at: d.toISOString(),
   };
+  // attached files: [{ name: "folder/file.ext", data: "<base64>" }], 25 MB in all
+  let bytes = 0;
+  for (const a of Array.isArray(body.attachments) ? body.attachments.slice(0, 400) : []) {
+    const rel = path.normalize(String(a?.name || "")).replace(/^([/\\]|\.\.[/\\])+/, "");
+    if (!rel || rel.includes("..") || typeof a.data !== "string") continue;
+    const buf = Buffer.from(a.data, "base64");
+    bytes += buf.length;
+    if (bytes > 25_000_000) throw new Error("attachments are larger than 25 MB in all; use the command line for more");
+    const f = path.join(dir, "attachments", rel);
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, buf);
+  }
+  if (bytes) { req.attached_bytes = bytes; fs.writeFileSync(path.join(dir, "private"), "a run with attached files is never exported to the public copy\n"); }
   fs.writeFileSync(path.join(dir, "request.json"), JSON.stringify(req, null, 2));
   const log = fs.openSync(path.join(dir, "swarm.log"), "a");
   const child = spawn(process.execPath, [path.join(ROOT, "swarm.mjs"), "--run", id], { cwd: ROOT, stdio: ["ignore", log, log], detached: true, env: process.env });
@@ -154,7 +167,7 @@ function gate(req, res, p, url) {
 function readBody(req) {
   return new Promise((ok, bad) => {
     let s = "";
-    req.on("data", (c) => { s += c; if (s.length > 100_000) bad(new Error("too large")); });
+    req.on("data", (c) => { s += c; if (s.length > 36_000_000) bad(new Error("too large")); });
     req.on("end", () => { try { ok(s ? JSON.parse(s) : {}); } catch (e) { bad(e); } });
   });
 }
@@ -174,6 +187,13 @@ http
         const f = path.join(RUNS, m[1], m[2]);
         if (!fs.existsSync(f)) return send(res, 404, { error: "not yet" });
         return send(res, 200, fs.readFileSync(f), TYPES[path.extname(f)] || "text/plain");
+      }
+      m = p.match(/^\/api\/runs\/([^/]+)\/attachment\/(.+)$/);
+      if (m && safeId(m[1])) {
+        const base = path.join(RUNS, m[1], "attachments");
+        const f = path.resolve(base, decodeURIComponent(m[2]));
+        if (!f.startsWith(base + path.sep) || !fs.existsSync(f) || !fs.statSync(f).isFile()) return send(res, 404, { error: "no such attachment" });
+        return send(res, 200, fs.readFileSync(f), /\.(png|jpe?g|gif|webp|pdf)$/i.test(f) ? (TYPES[path.extname(f).toLowerCase()] || "application/octet-stream") : "text/plain; charset=utf-8");
       }
       if (p.startsWith("/api/")) return send(res, 404, { error: "not found" });
       let f = p === "/ask" ? path.join(PUB, "ask.html") : p === "/" || p.startsWith("/run/") ? path.join(PUB, "index.html") : path.join(PUB, path.normalize(p).replace(/^(\.\.[/\\])+/, ""));

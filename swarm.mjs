@@ -4,6 +4,7 @@ import { GoogleGenAI } from "@google/genai";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { execFileSync } from "node:child_process";
 
 const ROOT = path.dirname(new URL(import.meta.url).pathname);
 const AGENT_ID = process.env.SWARM_AGENT || "antigravity-preview-09-2026";
@@ -196,6 +197,12 @@ async function agentTurnNow(seat, input, system, timeoutMs) {
     environment: seat.env || "remote",
   };
   if (seat.prev) req.previous_interaction_id = seat.prev;
+  if (ATTACH && !seat.env) {
+    for (let i = 0; ; i++) {
+      try { seat.env = await sandboxWithAttachments(); req.environment = seat.env; break; }
+      catch (e) { if (i < 6 && (rateLimited(e) || transient(e))) { await backoff(i); continue; } throw new Error(`could not put the attached files in the sandbox: ${String(e?.message || e).slice(0, 200)}`); }
+    }
+  }
   let it;
   for (let i = 0; ; i++) {
     try { it = await createWithFallbacks(req); break; }
@@ -234,6 +241,46 @@ async function modelCallNow(input, system, model, timeoutMs) {
   }
   it = await waitFor(it, timeoutMs);
   return { text: outputText(it), id: it.id, ...digestSteps(it) };
+}
+
+// ---------------------------------------------------------------- attachments
+// Files the person attached (runs/<id>/attachments/) are put into every agent's own sandbox at /attachments
+// before its first turn. A finding from a file is cited as attachment:<path>#L<from>-L<to> with the exact
+// text, and the gate checks that quote against the file itself.
+let ATTACH = null;   // { bytes, manifest, dir, files }
+function loadAttachments(run) {
+  const dir = path.join(run.dir, "attachments");
+  if (!fs.existsSync(dir)) return;
+  const files = [];
+  const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) walk(f); else if (e.isFile()) files.push({ rel: path.relative(dir, f), size: fs.statSync(f).size }); } };
+  walk(dir);
+  if (!files.length) return;
+  const tar = path.join(run.dir, "attachments.tar.gz");
+  execFileSync("tar", ["-czf", tar, "-C", dir, "."]);
+  const kb = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
+  const total = files.reduce((a, f) => a + f.size, 0);
+  const shown = files.slice().sort((a, b) => a.rel.localeCompare(b.rel)).slice(0, 300);
+  const manifest = `${files.length} files, ${kb(total)} in total, at /attachments in your sandbox:\n${shown.map((f) => `  /attachments/${f.rel}  (${kb(f.size)})`).join("\n")}${files.length > shown.length ? `\n  … and ${files.length - shown.length} more (list them with find /attachments -type f)` : ""}`;
+  ATTACH = { bytes: new Uint8Array(fs.readFileSync(tar)), manifest, dir, files: files.length, total, list: shown.slice(0, 60).map((f) => f.rel) };
+}
+async function sandboxWithAttachments() {
+  const env = await gem().environments.create({});
+  await gem().environments.files.upload({ environment: env.id, path: "attachments", file: new Blob([ATTACH.bytes], { type: "application/gzip" }), mime_type: "application/gzip", extract: true, overwrite: true });
+  return env.id;
+}
+function attachmentQuote(url, quote) {
+  // attachment:<path>#L10-L20 -> is the quoted text in that file?
+  try {
+    const rel = decodeURIComponent(String(url).replace(/^attachment:\/*/, "").replace(/#.*$/, "")).replace(/^attachments\//, "");
+    const f = path.resolve(ATTACH.dir, rel);
+    if (!f.startsWith(ATTACH.dir) || !fs.existsSync(f)) return "missing";
+    const flat = (t) => String(t).replace(/\s+/g, " ").trim().toLowerCase();
+    const body = flat(fs.readFileSync(f, "utf8").slice(0, 60_000_000)), q = flat(quote);
+    if (!q) return "missing";
+    if (body.includes(q)) return "found";
+    const w = q.split(" ");
+    return w.length >= 8 && body.includes(w.slice(1, -1).join(" ")) ? "found" : "missing";
+  } catch { return "missing"; }
 }
 
 // ---------------------------------------------------------------- parsing
@@ -280,7 +327,8 @@ function parseLedger(seat, text) {
       continue;
     }
     const dropping = r.status === "dropped";
-    if (r.type === "source" && !dropping && !/^https?:\/\//.test(r.url || "")) { rejected.push({ row: r, why: "source needs an http(s) url" }); continue; }
+    if (r.type === "source" && /^attachment:/.test(r.url || "")) r.publisher = r.publisher || "attachment";
+    if (r.type === "source" && !dropping && !/^(https?:\/\/|attachment:)/.test(r.url || "")) { rejected.push({ row: r, why: "source needs an http(s) url" }); continue; }
     if (r.type === "source" && !dropping && !(r.quote || "").trim()) { rejected.push({ row: r, why: "source needs an exact quote" }); continue; }
     r.by = seat.id;
     r.at = now();
@@ -338,6 +386,8 @@ ${criteriaText(run) ? `- What the final answer will be judged on, one criterion 
 - An old source and a new source that disagree are usually a change over time, not a contradiction: log both with their dates rather than marking one "contradicts".
 ${run.req.multimodal ? `- You may compute, not only read. Your sandbox runs Python: write and run code to calculate from the numbers you found, to run a small experiment or simulation, to fit or compare, to test whether a claim's arithmetic holds. A number you computed is a claim with "computed": true, "method": "what the code did, in two sentences", "inputs": ["the claim ids whose numbers went in"]; it needs no source of its own, and a red-team agent will recompute it. Show your working: the inputs must be claims with sources.
 - Figures. When a chart would carry the argument better than a sentence (a trend, a comparison, a distribution), log a figure row with the DATA, and the page draws it: {"type":"figure","id":"F${n}-1","kind":"line","title":"...","x_label":"...","y_label":"...","unit":"%","series":[{"name":"...","points":[["2024",12.5],["2025",18.2]]}],"caption":"what the reader should see in it, one sentence","method":"where the numbers came from and what you did to them","claims":["C${n}-3"]}. kind is line (change over time), bar (compare categories) or scatter (relation between two numbers); at most 4 series and 400 points each; x may be a number or a label; every y is a number you can trace to a claim or to your code. To point at an existing chart on a page instead, use {"type":"figure","id":"F${n}-2","kind":"image","url":"the image's own address","page":"the page it is on","title":"...","caption":"...","method":"who made it and from what data","claims":[...]}. A figure must earn its place: no decoration, no chart of two numbers.
+` : ""}${ATTACH ? `- The person attached files, and they are the primary material for this question: ${ATTACH.manifest}
+  Read them with code in your sandbox (Python or shell: find, grep, parse, count, sample, plot), not by guessing from their names; when there are many, look at their structure first and sample before you read everything. A finding from a file is a claim whose source has "url":"attachment:<path under /attachments>#L<first line>-L<last line>", "publisher":"attachment", and a "quote" copied exactly from those lines; one such source is enough for a claim about what the files contain. A number you counted or computed over the files is a computed claim (say exactly how, so it can be recomputed). Use the web only for what the files cannot tell you.
 ` : ""}- One fact per claim. A claim states only what its quoted sentence itself says: one number, one date, one event. Do not pack several facts, a list, or your own summary into one claim; split them into separate claims, each with its own quote. An independent checker re-opens the page and fails any claim that says more than the page.
 - A key claim (one the answer rests on) needs two independent publishers. If you can only find one, set "single_source": true.
 - stance is about the claim on that row: "contradicts" if the source disagrees with that claim. Actively look for the strongest contradicting evidence.
@@ -442,7 +492,7 @@ async function plan(run) {
     const k = researchers.length;
     const sys = `You plan deep research. Split the user's question into the sub-questions a careful analyst must answer to give a trustworthy answer: definitions and scope, the key facts and numbers, how they are measured, the strongest counter-evidence, and what could change the answer. Return ONLY JSON: {"questions":[{"id":"Q0-1","text":"...","parent":null}, ...]} with ${Math.max(k + 2, 6)}-${Math.max(2 * k, 10)} questions; children use "parent".${SWEEP} ${lang}`;
     try {
-      const { res, json } = await planCall(`User question (today is ${today()}):\n${run.req.question}`, sys);
+      const { res, json } = await planCall(`User question (today is ${today()}):\n${run.req.question}${ATTACH ? `\n\nThe person attached files; the agents have them in their sandboxes and work on them with code. Split the work over the files (by folder, by kind, by what to measure), not only over the web: ${ATTACH.manifest}` : ""}`, sys);
       run.totals.tokens += res.tokens;
       rows = (json.questions || []).map((q, i) => ({ type: "question", id: q.id || `Q0-${i + 1}`, text: q.text, parent: q.parent || null, branch: "B1" }));
     } catch (e) {
@@ -454,7 +504,7 @@ async function plan(run) {
     const sys1 = `You are the lead planner of a ${run.seats.length}-agent deep-research team. Split the user's question into exactly ${B} branches that together cover everything a careful analyst must establish (scope and definitions, the key facts and numbers, how they are measured, causes, comparisons, the strongest counter-evidence, what could change the answer). Branches must not overlap. Return ONLY JSON: {"branches":[{"title":"short title","scope":"one or two sentences: what this branch must establish"}]}.${SWEEP} ${lang}`;
     let branches = [];
     try {
-      const { res, json } = await planCall(`User question (today is ${today()}):\n${run.req.question}`, sys1);
+      const { res, json } = await planCall(`User question (today is ${today()}):\n${run.req.question}${ATTACH ? `\n\nThe person attached files; the agents have them in their sandboxes and work on them with code. Split the work over the files (by folder, by kind, by what to measure), not only over the web: ${ATTACH.manifest}` : ""}`, sys1);
       run.totals.tokens += res.tokens;
       branches = (json.branches || []).slice(0, B);
     } catch (e) {
@@ -653,7 +703,7 @@ async function gate(run, attempt) {
     const agree = src.filter((s) => s.stance !== "contradicts");
     const pubs = new Set(agree.map((s) => (s.publisher || "").toLowerCase().trim()).filter(Boolean));
     if (!agree.length) problems.push(`${c.id} (${c.by}) has no supporting source`);
-    else if (pubs.size < 2 && !c.single_source) problems.push(`${c.id} (${c.by}) rests on one publisher but is not marked single_source`);
+    else if (pubs.size < 2 && !c.single_source && !agree.some((s) => /^attachment:/.test(s.url || ""))) problems.push(`${c.id} (${c.by}) rests on one publisher but is not marked single_source`);
     if (src.some((s) => v.checksOf(s.id).some((k) => k.result === "confirmed"))) confirmed++;
     else problems.push(`${c.id} (${c.by}) has no confirmed red-team check`);
   }
@@ -679,7 +729,7 @@ async function gate(run, attempt) {
   // quote spot-check on a sample of key-claim sources
   const pool = v.keyClaims.flatMap((c) => v.sourcesOf(c.id).filter((s) => s.stance !== "contradicts"));
   const sample = pool.sort(() => Math.random() - 0.5).slice(0, Math.min(8 + Math.floor(run.seats.length / 8), pool.length));
-  const results = await Promise.all(sample.map(async (s) => [s, MOCK ? "found" : await quoteOnPage(s.url, s.quote)]));
+  const results = await Promise.all(sample.map(async (s) => [s, MOCK ? "found" : /^attachment:/.test(s.url || "") ? (ATTACH ? attachmentQuote(s.url, s.quote) : "unreachable") : await quoteOnPage(s.url, s.quote)]));
   let found = 0, reached = 0;
   for (const [s, r] of results) {
     if (r !== "unreachable") reached++;
@@ -815,7 +865,7 @@ async function criteria(run) {
 - The rest are bars of depth with numbers fitted to this question, which a judge can count: at least how many independent sources and which kinds count for this question (copies of one story count once); every key date, number or fact backed by two independent sources or plainly marked single-source; the strongest evidence on each side with at least how many sources; what was searched for and not found; anything else this particular question needs (a timeline that separates confirmed events from disputed ones, a table, a range).
 One bar per criterion. Never write a criterion about process or tools. Return ONLY JSON {"criteria":["..."]}.`;
   try {
-    const res = await modelCall(`QUESTION (today is ${today()}):\n${run.req.question}`, sys);
+    const res = await modelCall(`QUESTION (today is ${today()}):\n${run.req.question}${ATTACH ? `\n\nThe person attached files that the team will work on: ${ATTACH.manifest}` : ""}`, sys);
     run.totals.tokens += res.tokens;
     const c = (JSON.parse((res.text.match(/\{[\s\S]*\}/) || ["{}"])[0]).criteria || []).filter((x) => typeof x === "string" && x.trim()).slice(0, 6);
     run.criteria = c.length >= 3 ? c : fallback;
@@ -1146,6 +1196,7 @@ async function freeRun(run, R, X) {
   const base = run.req.baseline_from ? baselineFrom(run, run.req.baseline_from) : baseline(run);
   let status = "ended";
   try {
+    if (ATTACH) run.emit({ t: "attachments", files: ATTACH.files, bytes: ATTACH.total, list: ATTACH.list });
     await criteria(run);
     phaseOnce(run, "research", 1);
     run.say("system", `No orchestrator. ${R} researchers and ${X} red-team judges each run their own loop and coordinate on this board. The run stops when ${Math.round(QUORUM * 100)}% of the judges vote to stop, or when the time budget runs out.`);
@@ -1189,6 +1240,8 @@ async function main() {
   if (i < 0) throw new Error("usage: node swarm.mjs --run <runId>");
   const run = new Run(process.argv[i + 1]);
   if (run.req.concurrency) LIMIT = Number(run.req.concurrency);
+  loadAttachments(run);
+  if (ATTACH) run.req.multimodal = true;   // working on files means running code
   if (run.req.seat_model) SEAT_MODEL = run.req.seat_model; // per-run choice: hydrogen, neon, carbon
   const from = process.argv.includes("--from") ? process.argv[process.argv.indexOf("--from") + 1] : null;
   if (from === "write") return resumeAtWrite(run);
@@ -1218,6 +1271,7 @@ async function main() {
     { id: "J", role: "judge", model: LEAD_MODEL },
   ];
   run.emit({ t: "run", id: run.id, question: run.req.question, seats: run.seats.map(({ id, role, model, branch }) => ({ id, role, model, ...(branch && B > 1 ? { branch } : {}) })), branches: B, budget_min: run.req.minutes || 30, agent: MOCK ? "mock" : AGENT_ID, started_at: new Date(run.started).toISOString() });
+  if (ATTACH) run.emit({ t: "attachments", files: ATTACH.files, bytes: ATTACH.total, list: ATTACH.list });
   const base = baseline(run);
   let status = "ended";
   try {

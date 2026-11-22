@@ -136,6 +136,8 @@ function derive() {
   return D;
 }
 const touch = () => { D = null; };
+// a source that is an attached file opens the file itself
+const srcHref = (url) => (/^attachment:/.test(url || '') ? `${STATIC ? `${BASE}/data/${encodeURIComponent(S.id)}/attachments/` : `/api/runs/${encodeURIComponent(S.id)}/attachment/`}${String(url).replace(/^attachment:\/*/, '').replace(/^attachments\//, '').replace(/#.*$/, '').split('/').map(encodeURIComponent).join('/')}` : url);
 const byId = (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true });
 
 function claimInfo(id) {
@@ -191,6 +193,7 @@ async function showAsk() {
           <fieldset class="agents"><legend class="lab"><span>Coordination</span><span class="v" data-v="modehint">code assigns the work</span></legend>
             <div class="seg"><label><input type="radio" name="mode" value="orchestrated" checked><span>Orchestrated</span></label><label><input type="radio" name="mode" value="free"><span>No orchestrator</span></label></div>
           </fieldset>
+          <label class="attach"><span class="lab"><span>Attach files</span><span class="v" data-v="files">none</span></span><input type="file" name="files" multiple></label>
           <label class="check"><input type="checkbox" name="multimodal"> Multi-modal: agents may run code, compute and draw charts</label>
           <label class="check"><input type="checkbox" name="baseline" checked> Compare with Google Deep Research</label>
         </div>
@@ -210,6 +213,7 @@ async function showAsk() {
     if (!m.dataset.touched) { m.value = want; $('[data-v="minutes"]', f).textContent = want; }
   };
   f.minutes.addEventListener('input', () => { f.minutes.dataset.touched = '1'; });
+  f.files.addEventListener('change', () => { const n = f.files.files.length, b = [...f.files.files].reduce((a, x) => a + x.size, 0); $('[data-v="files"]', f).textContent = n ? `${n} file${n > 1 ? 's' : ''}, ${(b / 1e6).toFixed(1)} MB${b > 25e6 ? ' (over the 25 MB limit)' : ''}` : 'none'; });
   $$('input[name=mode]', f).forEach((r) => r.addEventListener('change', () => { $('[data-v="modehint"]', f).textContent = f.mode.value === 'free' ? 'agents loop on a shared board; judges vote to stop' : 'code assigns the work'; }));
   $$('input[name=agents]', f).forEach((r) => r.addEventListener('change', split));
   split();
@@ -221,6 +225,10 @@ async function showAsk() {
     const body = { question: f.question.value.trim(), agents: +f.agents.value, minutes: +f.minutes.value, baseline: f.baseline.checked, multimodal: f.multimodal.checked, mode: f.mode.value, ...(f.seat_model.value === 'mix' ? { models: ['gemini-4-hydrogen', 'gemini-4-hydrogen', 'gemini-4-neon', 'gemini-4-hydrogen', 'gemini-4-hydrogen', 'gemini-4-neon', 'gemini-4-carbon', 'gemini-4-argon'] } : { seat_model: f.seat_model.value }), ...(+f.agents.value > 128 ? { max_rounds: 1, concurrency: 256 } : {}) };
     if (body.question.length < 8) { $('#err').textContent = 'A little longer, please.'; return; }
     btn.disabled = true; btn.textContent = 'Starting';
+    if (f.files.files.length) {
+      const b64 = (file) => new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1] || ''); r.onerror = bad; r.readAsDataURL(file); });
+      body.attachments = await Promise.all([...f.files.files].map(async (x) => ({ name: x.webkitRelativePath || x.name, data: await b64(x) })));
+    }
     try {
       const r = await fetch('/api/runs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       const j = await r.json().catch(() => ({}));
@@ -389,6 +397,9 @@ function handle(ev, animate) {
     case 'review':
       S.reviews = (S.reviews || []).concat(ev);
       roomAdd(simpleLine(ev, `<b>Team review, round ${esc(ev.round)}</b> · <b class="${ev.approval >= 0.9 ? 'pass' : 'fail'}">${esc(ev.ok)} of ${esc(ev.voters)} would sign it (${Math.round(ev.approval * 100)}%)</b>${ev.signed != null ? ` <span class="faint">${esc(ev.signed)} as it stands · ${esc(ev.voters - ev.ok)} would block · ${esc(ev.blocking)} blocking issues</span>` : ''} <span class="faint">answers ${esc(ev.scores?.answers)}/5 · insight ${esc(ev.scores?.insight)}/5 · reads ${esc(ev.scores?.reads)}/5 · ${esc(ev.issues)} issues · ${esc(ev.missing)} findings reported missing</span>${(ev.sample || []).length ? `<ul>${ev.sample.map((i) => `<li><span class="faint">${esc(i.where)} · ${esc(i.kind)}</span> ${esc(i.problem)}</li>`).join('')}</ul>` : ''}`), animate);
+      break;
+    case 'attachments':
+      roomAdd(simpleLine(ev, `<b>${esc(ev.files)} attached file${ev.files > 1 ? 's' : ''}</b> <span class="faint">${(ev.bytes / 1e6).toFixed(1)} MB, placed in every agent's sandbox</span><ul>${(ev.list || []).slice(0, 12).map((x) => `<li class="faint">${esc(x)}</li>`).join('')}${ev.files > 12 ? `<li class="faint">…</li>` : ''}</ul>`), animate);
       break;
     case 'vote':
       S.votes = { yes: ev.yes, of: ev.of };
@@ -913,7 +924,7 @@ function renderDrawer(id) {
     const date = s.published ? esc(s.published) : '';
     return `<div class="src ${contra ? 'contra' : ''} ${s.status === 'dropped' ? 'gone' : ''}">
       <div class="pubrow"><span class="pub">${esc(s.publisher || host(s.url))}</span><span class="date">${date}</span></div>
-      <a class="title" href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title || s.url)}<span class="host">${esc(host(s.url))} ↗</span></a>
+      <a class="title" href="${esc(srcHref(s.url))}" target="_blank" rel="noopener">${esc(s.title || s.url)}<span class="host">${esc(/^attachment:/.test(s.url || '') ? String(s.url).replace(/^attachment:\/*/, '') : host(s.url))} ↗</span></a>
       ${s.quote ? `<blockquote>${esc(s.quote)}</blockquote>` : '<p class="warn" style="font-size:13px">No quote recorded.</p>'}
       <div style="margin-top:8px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
         <span class="stance ${contra ? 'contra' : ''}">${contra ? 'Contradicts the claim' : 'Agrees'}</span>

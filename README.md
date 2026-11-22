@@ -38,3 +38,17 @@ Pick 8, 16, 32, 64 or 128 agents. About 80% are researchers and 20% red team. Fr
 **Test set** (`eval/testset.json`): questions we did not tune on, chosen to be messy rather than the happy path: a false premise, a typo-ridden question with three asks, a Chinese-language question, a broad contested health question, and a question that cannot be answered yet (an event on the same day). Each edge case has a written expectation, and the judge grades both answers against it.
 
 Results: `eval/results.md` (generated).
+
+## Attach files, and the command line
+
+A question can come with files: data, logs, agent traces, source code. They are placed in every agent's sandbox at `/attachments`, and the agents work on them with code. A finding from a file is cited as `attachment:<path>#L<from>-L<to>` with the exact text, and the gate checks that quote against the file. Runs with attachments are never part of the public export.
+
+```
+node cli.mjs ask "Why did this run produce no report? Count, don't guess." --attach ./record --agents 8 --model neon
+node cli.mjs runs
+node cli.mjs watch <run>
+node cli.mjs show <run> report        # or: judgement | room | criteria | files
+node cli.mjs grep <run> "timeout" --type claim
+```
+
+In the browser the same thing is the "Attach files" field (up to 25 MB; the command line takes folders up to 300 MB and skips `.git`, `node_modules` and files over 25 MB).

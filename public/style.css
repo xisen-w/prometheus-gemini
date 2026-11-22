@@ -412,3 +412,6 @@ figure.fig figcaption b { color: var(--fg); font-weight: 600; }
 /* math */
 .katex { font-size: 1.02em; }
 .math-block { overflow-x: auto; margin: 14px 0; }
+
+/* attach files */
+label.attach input[type=file] { margin-top: 8px; font: 13px var(--sans); color: var(--muted); max-width: 100%; }

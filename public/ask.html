@@ -50,6 +50,7 @@
       </select>
       <button class="go" type="submit">Start</button>
     </div>
+    <div class="row"><label class="muted" style="font-size:14px">Attach files (data, logs, code; up to 25 MB): <input type="file" name="files" multiple style="font:inherit;font-size:13px;margin-left:6px"></label></div>
     <div class="muted" id="err" style="margin-top:10px"></div>
   </form>
   <section id="run" hidden>
@@ -115,7 +116,9 @@ $('#f').addEventListener('submit', async (e) => {
   const [agents, minutes] = f.size.value.split(',').map(Number);
   btn.disabled = true; $('#err').textContent = '';
   try {
-    const r = await fetch('/api/runs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question: f.question.value.trim(), agents, minutes, seat_model: f.model.value, baseline: false, ...(agents > 16 ? {} : { max_rounds: 2 }) }) });
+    const b64 = (file) => new Promise((ok, bad) => { const rd = new FileReader(); rd.onload = () => ok(String(rd.result).split(',')[1] || ''); rd.onerror = bad; rd.readAsDataURL(file); });
+    const attachments = await Promise.all([...f.files.files].map(async (x) => ({ name: x.name, data: await b64(x) })));
+    const r = await fetch('/api/runs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question: f.question.value.trim(), agents, minutes, seat_model: f.model.value, baseline: false, ...(attachments.length ? { attachments } : {}), ...(agents > 16 ? {} : { max_rounds: 2 }) }) });
     const j = await r.json();
     if (!r.ok || !j.id) throw new Error(j.error || `Server said ${r.status}`);
     history.pushState(null, '', `/ask?run=${j.id}`);
