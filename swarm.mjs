@@ -688,6 +688,7 @@ async function gate(run, attempt) {
   }
   const stats = { stale_states: stale.length, undated_key_claims: undated, orphan_leads: orphans.length, key_claims: v.keyClaims.length, confirmed, open_challenges: v.openChallenges.length, quotes_checked: results.length, quotes_reached: reached, quotes_found: found };
   const pass = problems.length === 0;
+  run.lastGate = { pass, problems };
   run.emit({ t: "gate", attempt, pass, problems, stats });
   run.phaseSeen?.add(`gate:${attempt}`);
   return { pass, problems };
@@ -873,6 +874,7 @@ For every criterion, in order:
 - A criterion that asks for a clear or direct answer is met only when the READER TEST shows every ask stated: an ask the reader could not answer from the opening was not answered where people look, however well the rest of the report covers it.
 - A key fact the report states must follow from the quoted passage of a source attached to the claim it cites; when the quotes do not say it, the criterion it serves is not met.
 - evidence: one or two sentences on where the report meets it, or what you found instead. missing: what exactly is missing, empty when met.
+- The report must agree with itself. A person, item or number named in the opening answer or in a shortlist must be the same in the sections it summarises (a "top 5" drawn from "these 20" contains only people among the 20; a count stated up front matches the list). A contradiction between two parts of the report fails the first criterion: say which two places disagree.
 Judge only against the question and its criteria; do not add requirements of your own. When you cannot tell whether a criterion is met, it is not met. Return ONLY JSON {"checks":[{"criterion":1,"met":true,"evidence":"...","missing":""}]}.`;
   let pass = false, notes = "", checks = [];
   try {
@@ -1252,7 +1254,23 @@ async function main() {
 // A reader who asked "will he be back or not?" must find Yes or No in the first line, not in the fifth
 // sentence of a long paragraph. After the report is written, Argon states the verdict from the report itself
 // and it is placed directly under the title.
+// When the evidence gate has not passed, the report carries the reasons: a reader must not take it for cleared.
+function gateNote(run, report) {
+  const g = run.lastGate;
+  if (!g || g.pass || !g.problems.length || report.includes("## What did not pass the evidence gate")) return report;
+  const kinds = [["has no confirmed red-team check", "Key claims no red-team agent confirmed"], ["rests on one publisher", "Key claims resting on one publisher and not marked single-source"], ["was not found on", "Quotes the system could not find on the cited page"], ["is unresolved", "Red-team challenges left unresolved"], ["nobody looked for what changed", "Old states nobody rechecked"], ["has no answer", "Sub-questions left unanswered"], ["was mentioned in the room", "Leads mentioned in the room and never logged"], ["computed", "Computed numbers nobody recomputed"]];
+  const lines = [];
+  for (const [needle, label] of kinds) {
+    const hit = g.problems.filter((p) => p.includes(needle));
+    if (hit.length) lines.push(`- ${label}: ${hit.length} (${[...new Set(hit.map((p) => (p.match(/[CSXQ]\w*-[\w-]+/) || [""])[0]).filter(Boolean))].slice(0, 12).map((id) => (id.startsWith("C") ? `[${id}]` : id)).join(", ")}${hit.length > 12 ? ", …" : ""})`);
+  }
+  const out = `${report.trimEnd()}\n\n## What did not pass the evidence gate\n\nThe automatic gate still refused this evidence when the report was written (${g.problems.length} open items). Treat the claims below as not cleared.\n${lines.join("\n")}\n`;
+  fs.writeFileSync(path.join(run.dir, "report.md"), out);
+  return out;
+}
+
 async function bottomLine(run, report) {
+  report = gateNote(run, report);
   if (/^\*\*Bottom line/m.test(report.slice(0, 4000))) return report;
   const head = report.slice(0, 9000);
   const tailAt = Math.max(report.lastIndexOf("## Strongest contradicting"), report.lastIndexOf("## Confidence"), report.length - 14000);
