@@ -282,6 +282,7 @@ function parseRoom(text) {
 
 // ---------------------------------------------------------------- prompts
 const SWEEP = ` If the question is about a specific organisation, product or person, the FIRST branch or the first sub-questions are a full sweep of its own footprint, one surface per sub-question: every page of its own site (sitemap.xml, robots.txt, likely paths such as /privacy /terms /careers /jobs /about /blog /docs /pricing /security), every subdomain (certificate-transparency listings such as crt.sh, the app or login host, the trust centre, the status page, the docs host) with the same paths tried on each, the page source and scripts of its app and login pages, its legal and trust documents (privacy policy, terms, subprocessor list), its job postings on its own site and on hiring platforms, its code and model repositories, company and visa filings, and archived copies of all of these.`;
+const STALE_DAYS = Number(process.env.SWARM_STALE_DAYS || 60);
 const today = () => new Date().toISOString().slice(0, 10);
 
 function protocol(run, seat) {
@@ -308,10 +309,10 @@ Every finding goes into the shared evidence ledger. End EVERY reply with exactly
 ${run.free ? "one message per line; EVERYONE reads the board. Say what you are taking (start the line with TAKING:), what you found that others should know, ask for help, answer others. Use @R7 to address someone" : "@R2 one message per line to a teammate (they only see messages that @ them; @all reaches everyone)"}
 \`\`\`
 \`\`\`ledger
-{"type":"claim","id":"C${n}-1","text":"...","key":true,"status":"kept"}
+{"type":"claim","id":"C${n}-1","text":"...","key":true,"status":"kept","kind":"state","as_of":"YYYY-MM-DD"}
 {"type":"source","id":"S${n}-1","claim":"C${n}-1","url":"https://...","title":"...","publisher":"original publisher (for a reprint, the original outlet)","quote":"10-40 words copied EXACTLY from the page","stance":"agrees","published":"YYYY-MM-DD","retrieved":"${today()}"}
 \`\`\`
-One JSON object per line. Row types: question {id,text,parent}, claim {id,text,key,status,single_source}, source {id,claim,url,title,publisher,quote,stance,published,retrieved}, answer {question,status:"answered"|"abandoned",text,claims:[ids]}, not_found {text,searched}, check {source,result:"confirmed"|"wrong"|"unreachable",note}, challenge {id,claim,to,text}, resolution {challenge,text}.
+One JSON object per line. Row types: question {id,text,parent}, claim {id,text,key,status,single_source,kind,as_of,rechecked}, source {id,claim,url,title,publisher,quote,stance,published,retrieved}, answer {question,status:"answered"|"abandoned",text,claims:[ids]}, not_found {text,searched}, check {source,result:"confirmed"|"wrong"|"unreachable",note}, challenge {id,claim,to,text}, resolution {challenge,text}.
 ${ids}
 Rules:
 - quote is copied character-for-character from the page you opened. The system re-opens pages and searches for the quote; a quote it cannot find fails the whole submission.
@@ -319,6 +320,9 @@ Rules:
 - Check that a page is about the right subject: other organisations can share the name. Drop sources about a namesake.
 - The ledger is the only thing the writer reads. A finding you only mention in the room is lost. Whatever you learn that bears on THE QUESTION goes into the ledger as a claim with its source and quote, even when it is outside your own sub-questions; say in the room whose sub-question it helps.
 - A page that needs a login, or that you cannot re-open, is still evidence: its address, its title, and the words on its sign-in screen say what exists. Log exactly what is visible (and how you saw it: the page itself, a search-engine snippet, or curl in your sandbox).
+- Time. Every claim says WHEN it was true. "kind" is "event" (something that happened on a date: a funding round, a release, a vote; it stays true forever), "state" (a condition that can change: who leads, what exists, what a price or score is, whether a problem is solved) or "forecast". "as_of" is the date the source shows it was true (the article's date, or the date named in the text), never today's date unless you saw it today on a live page. Put the date in the claim's text too ("As of March 2026, ...").
+- An old state is not the current state. For a key state claim whose as_of is more than ${STALE_DAYS} days before today, run ONE targeted search for what changed since (the subject plus the newest months, newest results first). If you find something newer, write the newer claim with its own as_of and keep the old one as history. If you find nothing, keep the claim and add "rechecked":{"on":"${today()}","found":"nothing newer"}. Either way you are then free to state it plainly with its date; do not hedge, and never write "may have changed" without having looked.
+- An old source and a new source that disagree are usually a change over time, not a contradiction: log both with their dates rather than marking one "contradicts".
 - One fact per claim. A claim states only what its quoted sentence itself says: one number, one date, one event. Do not pack several facts, a list, or your own summary into one claim; split them into separate claims, each with its own quote. An independent checker re-opens the page and fails any claim that says more than the page.
 - A key claim (one the answer rests on) needs two independent publishers. If you can only find one, set "single_source": true.
 - stance is about the claim on that row: "contradicts" if the source disagrees with that claim. Actively look for the strongest contradicting evidence.
@@ -344,7 +348,8 @@ function claimDigest(run, cids) {
           return `   - ${s.id} [${s.stance}] ${s.publisher} ${s.published || ""} ${s.url}\n     quote: "${s.quote}"${ch ? `\n     checks: ${ch}` : ""}`;
         })
         .join("\n");
-      return `- ${c.id} (by ${c.by}${c.key ? ", key" : ""}${c.single_source ? ", single source" : ""}): ${c.text}\n${src || "   (no sources)"}`;
+      const when = `${c.kind ? `, ${c.kind}` : ""}${c.as_of ? ` as of ${c.as_of}` : ""}${c.rechecked ? `, rechecked ${c.rechecked.on || ""}: ${c.rechecked.found || ""}` : ""}`;
+      return `- ${c.id} (by ${c.by}${c.key ? ", key" : ""}${c.single_source ? ", single source" : ""}${when}): ${c.text}\n${src || "   (no sources)"}`;
     })
     .filter(Boolean)
     .join("\n");
@@ -527,7 +532,7 @@ async function redteam(run, round, gateProblems = [], branch = null) {
     const input = `${roomFor(run, seat)}
 
 You are the red team. You do not write the answer; you try to break it before anyone declares it done.
-For EACH key claim below: re-open at least one of its sources yourself (open the URL) and write a check row: confirmed (the quote is on the page and supports the claim), wrong (quote missing, or page says otherwise), or unreachable. If page reading fails (a login page, a script-rendered page), try the search-engine snippet for that address and curl in your sandbox before writing unreachable; when either shows the quoted words, the check is confirmed. When a claim says more than its quote, ask the owner to narrow it, never to drop it: a true but over-stated finding must stay in the ledger. Then look for what the team skipped: claims resting on one publisher without "single_source", numbers that do not match, outdated dates, contradicting evidence nobody logged. For each problem write a challenge row {"type":"challenge","id":"X${seat.id.slice(1)}-k","claim":"C…","to":"<seat that owns the claim>","text":"…"} and tell that seat with @ in the room.
+For EACH key claim below: re-open at least one of its sources yourself (open the URL) and write a check row: confirmed (the quote is on the page and supports the claim), wrong (quote missing, or page says otherwise), or unreachable. If page reading fails (a login page, a script-rendered page), try the search-engine snippet for that address and curl in your sandbox before writing unreachable; when either shows the quoted words, the check is confirmed. When a claim says more than its quote, ask the owner to narrow it, never to drop it: a true but over-stated finding must stay in the ledger. Then look for what the team skipped: claims resting on one publisher without "single_source", numbers that do not match, outdated dates, contradicting evidence nobody logged. Check time on every key claim: a missing as_of, an as_of that is not what the source shows, or an old state written as if it were true today is a challenge ("stale: what changed since <date>?"); the fix is one search and a dated claim, not a hedge. For each problem write a challenge row {"type":"challenge","id":"X${seat.id.slice(1)}-k","claim":"C…","to":"<seat that owns the claim>","text":"…"} and tell that seat with @ in the room.
 ${unanswered.length ? `\nUnanswered sub-questions:\n${unanswered.join("\n")}\n` : ""}${gateProblems.length ? `\nThe automatic gate refused the last attempt for these reasons:\n${gateProblems.map((p) => "- " + p).join("\n")}\n` : ""}
 Key claims to attack:
 ${claimDigest(run, mine)}`;
@@ -629,6 +634,11 @@ async function gate(run, attempt) {
     if (src.some((s) => v.checksOf(s.id).some((k) => k.result === "confirmed"))) confirmed++;
     else problems.push(`${c.id} (${c.by}) has no confirmed red-team check`);
   }
+  // an old state presented as current: key state claims older than the window with no recheck
+  const cutoff = Date.now() - STALE_DAYS * 86_400_000;
+  const stale = v.keyClaims.filter((c) => c.kind === "state" && c.as_of && Date.parse(c.as_of) < cutoff && !c.rechecked);
+  for (const c of stale.slice(0, 40)) problems.push(`${c.id} (${c.by}) is a state as of ${c.as_of} and nobody looked for what changed since: search once, then update it or mark it rechecked`);
+  const undated = v.keyClaims.filter((c) => !c.as_of).length;
   // leads lost between the room and the ledger: an address several seats mentioned that no kept source cites
   const kept = new Set([...v.sources.values()].filter(v.kept).map((x) => { try { const u = new URL(x.url); return u.hostname.replace(/^www\./, "") + u.pathname.replace(/\/$/, ""); } catch { return ""; } }));
   const mentions = new Map();
@@ -653,7 +663,7 @@ async function gate(run, attempt) {
     if (r === "found") found++;
     if (r === "missing") problems.push(`quote of ${s.id} (${s.by}) was not found on ${s.url}`);
   }
-  const stats = { orphan_leads: orphans.length, key_claims: v.keyClaims.length, confirmed, open_challenges: v.openChallenges.length, quotes_checked: results.length, quotes_reached: reached, quotes_found: found };
+  const stats = { stale_states: stale.length, undated_key_claims: undated, orphan_leads: orphans.length, key_claims: v.keyClaims.length, confirmed, open_challenges: v.openChallenges.length, quotes_checked: results.length, quotes_reached: reached, quotes_found: found };
   const pass = problems.length === 0;
   run.emit({ t: "gate", attempt, pass, problems, stats });
   run.phaseSeen?.add(`gate:${attempt}`);
@@ -679,14 +689,14 @@ function ledgerDigest(run, { branch = null, compact = false } = {}) {
         const pubs = [...new Set(src.filter((x) => x.stance !== "contradicts").map((x) => x.publisher))].join("; ");
         const contra = src.filter((x) => x.stance === "contradicts").length;
         const conf = src.some((x) => v.checksOf(x.id).some((k) => k.result === "confirmed"));
-        return `- ${cid}${c.key ? " key" : ""}${c.single_source ? " single-source" : ""}: ${c.text} | publishers: ${pubs || "none"}${contra ? ` | ${contra} contradicting` : ""} | ${conf ? "confirmed" : "unconfirmed"}`;
+        return `- ${cid}${c.key ? " key" : ""}${c.single_source ? " single-source" : ""}${c.kind ? ` ${c.kind}` : ""}${c.as_of ? ` as of ${c.as_of}` : ""}${c.rechecked ? ` (rechecked ${c.rechecked.on || ""}: ${c.rechecked.found || ""})` : ""}: ${c.text} | publishers: ${pubs || "none"}${contra ? ` | ${contra} contradicting` : ""} | ${conf ? "confirmed" : "unconfirmed"}`;
       }).join("\n")
     : claimDigest(run, claims);
   return `QUESTIONS AND ANSWERS\n${qs.join("\n")}\n\nCLAIMS WITH SOURCES AND CHECKS\n${cd}\n\nSEARCHED, NOT FOUND\n${nf.join("\n") || "(none)"}\n\nRED-TEAM CHALLENGES\n${ch.join("\n") || "(none)"}`;
 }
 
 async function writeSections(run, judgeNotes) {
-  const sys = `You write ONE section of a deep-research report from the evidence ledger of one research branch. Write in the language of the user's question. Start with a "## " heading (the branch title). Every sentence that states a ledger claim ends with its id in square brackets, like [C12-3]; cite only ids in this ledger, invent nothing. Link only URLs from the ledger. Name contradicting evidence and how it was weighed; say plainly when a key number rests on one publisher. Dense and concrete; no preamble.`;
+  const sys = `You write ONE section of a deep-research report from the evidence ledger of one research branch. Write in the language of the user's question. Start with a "## " heading (the branch title). Every sentence that states a ledger claim ends with its id in square brackets, like [C12-3]; cite only ids in this ledger, invent nothing. Link only URLs from the ledger. Name contradicting evidence and how it was weighed; say plainly when a key number rests on one publisher. Write each time-sensitive statement with its date and lead with the latest known state; a change over time is a short timeline, newest last; never put an old state in the present tense, and do not add hedges beyond the date. Dense and concrete; no preamble.`;
   const parts = await Promise.all(
     run.branches.map(async (b) => {
       try {
@@ -716,6 +726,7 @@ async function write(run, judgeNotes = "") {
 - Link only URLs that appear in the ledger (Markdown links).
 - Include a section on the strongest contradicting evidence and how it was weighed, a "Searched, not found" section, and a final "Confidence" section (high / medium / low, with reasons and what could change).
 - Say plainly when a key number rests on a single publisher.
+- Time: write each time-sensitive statement with its date ("as of March 2026", "in September 2026") and lead with the latest known state. When the ledger shows a change over time, tell it as a short timeline, newest last. Never put an old state in the present tense. A state that was rechecked with nothing newer is stated plainly with its date; do not add hedges such as "may have changed" beyond that. Then give your best current reading in one sentence, with what it rests on.
 - When the question is about a specific organisation, product or person, give what its own pages, app, documents, job postings and filings show its own section near the top, including small clues (the wording of a login page, a trust-centre document, a job title) and what each implies; press reports come after.
 - Be concise: short is fine, shallow is not.`;
   try {
@@ -907,7 +918,7 @@ ${line}
 
 You are one of the red-team judges. You do not write the answer; you try to break it, and you decide when the team may stop. This is turn ${n} of your loop.
 1. Re-open sources yourself (open the URL) for key claims that have no confirmed check and write a check row for each: confirmed (the quote is on the page and supports the claim), wrong, or unreachable. If page reading fails (a login page, a script-rendered page), try the search-engine snippet for that address and curl in your sandbox before writing unreachable; when either shows the quoted words, the check is confirmed. When a claim says more than its quote, ask the owner to narrow it, never to drop it: a true but over-stated finding must stay in the ledger.
-2. Look for what the team skipped: parts of the question nobody took, claims on one publisher without "single_source", numbers that disagree, stale dates, contradicting evidence nobody logged. For each problem write a challenge row {"type":"challenge","id":"X${seat.id.slice(1)}-k","claim":"C…","to":"<seat that owns the claim>","text":"…"}; for a gap nobody covers, say it on the board.
+2. Look for what the team skipped: parts of the question nobody took, claims on one publisher without "single_source", numbers that disagree, stale dates, contradicting evidence nobody logged. Check time on every key claim: a missing as_of, an as_of that is not what the source shows, or an old state written as if it were true today is a challenge ("stale: what changed since <date>?"); the fix is one search and a dated claim, not a hedge. For each problem write a challenge row {"type":"challenge","id":"X${seat.id.slice(1)}-k","claim":"C…","to":"<seat that owns the claim>","text":"…"}; for a gap nobody covers, say it on the board.
 3. Check how your earlier challenges were resolved.
 ${mineCh.length ? `\nYOUR CHALLENGES:\n${mineCh.map((x) => `- ${x.id} on ${x.claim}: ${x.text.slice(0, 140)} -> ${v.resolutions.get(x.id)?.text?.slice(0, 160) || "NOT RESOLVED YET"}`).join("\n")}\n` : ""}
 KEY CLAIMS WITH NO CONFIRMED CHECK (${unchecked.length} in total; this is your slice, other judges see other slices):
@@ -964,7 +975,7 @@ async function writeOutlined(run) {
     const o = await modelCall(`USER QUESTION: ${run.req.question}\n\nCLAIMS:\n${kept.map((c) => `${c.id}${c.key ? " key" : ""}: ${c.text.slice(0, 200)}`).join("\n")}`, `You outline a deep-research report. Group the claims into 5-10 sections that together answer the user's question; every key claim goes in exactly one section. Return ONLY JSON {"sections":[{"title":"...","claims":["C1-2", ...]}]}. Titles in the language of the user's question.`);
     run.totals.tokens += o.tokens;
     const sections = (JSON.parse((o.text.match(/\{[\s\S]*\}/) || ["{}"])[0]).sections || []).filter((x) => (x.claims || []).length);
-    const sys = `You write ONE section of a deep-research report from the evidence given. Write in the language of the user's question. Start with a "## " heading. Every sentence that states a ledger claim ends with its id in square brackets, like [C12-3]; cite only the ids given, invent nothing, and state only what that claim's text and quotes say. Link only URLs from the evidence. Name contradicting evidence and how it was weighed; say plainly when a key number rests on one publisher. Dense and concrete; no preamble.`;
+    const sys = `You write ONE section of a deep-research report from the evidence given. Write in the language of the user's question. Start with a "## " heading. Every sentence that states a ledger claim ends with its id in square brackets, like [C12-3]; cite only the ids given, invent nothing, and state only what that claim's text and quotes say. Link only URLs from the evidence. Name contradicting evidence and how it was weighed; say plainly when a key number rests on one publisher. Write each time-sensitive statement with its date and lead with the latest known state; a change over time is a short timeline, newest last; never put an old state in the present tense, and do not add hedges beyond the date. Dense and concrete; no preamble.`;
     const parts = await Promise.all(sections.map(async (sec) => {
       try {
         const ids = sec.claims.filter((id) => v.claims.has(id));
