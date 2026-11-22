@@ -246,13 +246,13 @@ function blocks(text, lang) {
 }
 
 let renameN = 0;
-const TYPES = new Set(["question", "claim", "source", "answer", "not_found", "check", "challenge", "resolution"]);
+const TYPES = new Set(["question", "claim", "source", "answer", "not_found", "check", "challenge", "resolution", "figure"]);
 function parseLedger(seat, text) {
   const raw = blocks(text, "ledger") || blocks(text, "jsonl");
   const rows = [];
   const rejected = [];
   const n = seat.id.replace(/^[A-Z]+/, "");
-  const own = seat.role === "redteam" ? [`X${n}-`, `S${seat.id}-`] : [`C${n}-`, `S${n}-`, `Q${n}-`];
+  const own = seat.role === "redteam" ? [`X${n}-`, `S${seat.id}-`, `F${seat.id}-`] : [`C${n}-`, `S${n}-`, `Q${n}-`, `F${n}-`];
   for (const line of raw.split("\n").map((l) => l.trim()).filter(Boolean)) {
     let r;
     try { r = JSON.parse(line); } catch { rejected.push({ row: line.slice(0, 200), why: "not valid JSON" }); continue; }
@@ -261,6 +261,19 @@ function parseLedger(seat, text) {
     if (r.type === "source" && r.id && !own.some((p) => r.id.startsWith(p)) && r.status !== "dropped") {
       r.renamed_from = r.id;
       r.id = `${own[1]}x${++renameN}`;
+    }
+    if (r.type === "figure") {
+      // a figure is data, not a picture: the page draws it, so every mark can be opened
+      const fid = own.find((p) => p.startsWith("F"));
+      if (!r.id || !r.id.startsWith(fid)) { rejected.push({ row: { type: "figure", id: r.id }, why: `figure id must start with ${fid}` }); continue; }
+      if (r.kind === "image") { if (!/^https?:\/\//.test(r.url || "")) { rejected.push({ row: { type: "figure", id: r.id }, why: "an image figure needs the image's http(s) url" }); continue; } }
+      else {
+        if (!["line", "bar", "scatter"].includes(r.kind)) { rejected.push({ row: { type: "figure", id: r.id }, why: "kind must be line, bar, scatter or image" }); continue; }
+        const ok = Array.isArray(r.series) && r.series.length >= 1 && r.series.length <= 4 && r.series.every((s) => Array.isArray(s.points) && s.points.length >= 1 && s.points.length <= 400 && s.points.every((p) => Array.isArray(p) && typeof p[1] === "number"));
+        if (!ok) { rejected.push({ row: { type: "figure", id: r.id }, why: "series must be 1-4 items of {name, points:[[x, number], ...]} with at most 400 points each" }); continue; }
+      }
+      if (!r.title || !r.method) { rejected.push({ row: { type: "figure", id: r.id }, why: "a figure needs a title and a method (how the numbers were produced)" }); continue; }
+      r.by = seat.id; r.at = now(); rows.push(r); continue;
     }
     if (r.id && ["claim", "source", "question", "challenge"].includes(r.type) && !own.some((p) => r.id.startsWith(p))) {
       rejected.push({ row: r, why: `id must start with ${own.join(" or ")}` });
@@ -323,7 +336,9 @@ ${criteriaText(run) ? `- What the final answer will be judged on, one criterion 
 - Time. Every claim says WHEN it was true. "kind" is "event" (something that happened on a date: a funding round, a release, a vote; it stays true forever), "state" (a condition that can change: who leads, what exists, what a price or score is, whether a problem is solved) or "forecast". "as_of" is the date the source shows it was true (the article's date, or the date named in the text), never today's date unless you saw it today on a live page. Put the date in the claim's text too ("As of March 2026, ...").
 - An old state is not the current state. For a key state claim whose as_of is more than ${STALE_DAYS} days before today, run ONE targeted search for what changed since (the subject plus the newest months, newest results first). If you find something newer, write the newer claim with its own as_of and keep the old one as history. If you find nothing, keep the claim and add "rechecked":{"on":"${today()}","found":"nothing newer"}. Either way you are then free to state it plainly with its date; do not hedge, and never write "may have changed" without having looked.
 - An old source and a new source that disagree are usually a change over time, not a contradiction: log both with their dates rather than marking one "contradicts".
-- One fact per claim. A claim states only what its quoted sentence itself says: one number, one date, one event. Do not pack several facts, a list, or your own summary into one claim; split them into separate claims, each with its own quote. An independent checker re-opens the page and fails any claim that says more than the page.
+${run.req.multimodal ? `- You may compute, not only read. Your sandbox runs Python: write and run code to calculate from the numbers you found, to run a small experiment or simulation, to fit or compare, to test whether a claim's arithmetic holds. A number you computed is a claim with "computed": true, "method": "what the code did, in two sentences", "inputs": ["the claim ids whose numbers went in"]; it needs no source of its own, and a red-team agent will recompute it. Show your working: the inputs must be claims with sources.
+- Figures. When a chart would carry the argument better than a sentence (a trend, a comparison, a distribution), log a figure row with the DATA, and the page draws it: {"type":"figure","id":"F${n}-1","kind":"line","title":"...","x_label":"...","y_label":"...","unit":"%","series":[{"name":"...","points":[["2024",12.5],["2025",18.2]]}],"caption":"what the reader should see in it, one sentence","method":"where the numbers came from and what you did to them","claims":["C${n}-3"]}. kind is line (change over time), bar (compare categories) or scatter (relation between two numbers); at most 4 series and 400 points each; x may be a number or a label; every y is a number you can trace to a claim or to your code. To point at an existing chart on a page instead, use {"type":"figure","id":"F${n}-2","kind":"image","url":"the image's own address","page":"the page it is on","title":"...","caption":"...","method":"who made it and from what data","claims":[...]}. A figure must earn its place: no decoration, no chart of two numbers.
+` : ""}- One fact per claim. A claim states only what its quoted sentence itself says: one number, one date, one event. Do not pack several facts, a list, or your own summary into one claim; split them into separate claims, each with its own quote. An independent checker re-opens the page and fails any claim that says more than the page.
 - A key claim (one the answer rests on) needs two independent publishers. If you can only find one, set "single_source": true.
 - stance is about the claim on that row: "contradicts" if the source disagrees with that claim. Actively look for the strongest contradicting evidence.
 - Searched and found nothing? Write a not_found row with what you searched.
@@ -349,7 +364,8 @@ function claimDigest(run, cids) {
         })
         .join("\n");
       const when = `${c.kind ? `, ${c.kind}` : ""}${c.as_of ? ` as of ${c.as_of}` : ""}${c.rechecked ? `, rechecked ${c.rechecked.on || ""}: ${c.rechecked.found || ""}` : ""}`;
-      return `- ${c.id} (by ${c.by}${c.key ? ", key" : ""}${c.single_source ? ", single source" : ""}${when}): ${c.text}\n${src || "   (no sources)"}`;
+      const comp = c.computed ? `   computed: ${c.method || "?"} | inputs: ${(c.inputs || []).join(", ") || "none"} | recomputed: ${v.checks.filter((k) => k.claim === c.id).map((k) => `${k.result} by ${k.by}`).join(", ") || "by nobody yet"}` : "";
+      return `- ${c.id} (by ${c.by}${c.key ? ", key" : ""}${c.single_source ? ", single source" : ""}${when}): ${c.text}\n${comp || src || "   (no sources)"}`;
     })
     .filter(Boolean)
     .join("\n");
@@ -532,7 +548,7 @@ async function redteam(run, round, gateProblems = [], branch = null) {
     const input = `${roomFor(run, seat)}
 
 You are the red team. You do not write the answer; you try to break it before anyone declares it done.
-For EACH key claim below: re-open at least one of its sources yourself (open the URL) and write a check row: confirmed (the quote is on the page and supports the claim), wrong (quote missing, or page says otherwise), or unreachable. If page reading fails (a login page, a script-rendered page), try the search-engine snippet for that address and curl in your sandbox before writing unreachable; when either shows the quoted words, the check is confirmed. When a claim says more than its quote, ask the owner to narrow it, never to drop it: a true but over-stated finding must stay in the ledger. Then look for what the team skipped: claims resting on one publisher without "single_source", numbers that do not match, outdated dates, contradicting evidence nobody logged. Check time on every key claim: a missing as_of, an as_of that is not what the source shows, or an old state written as if it were true today is a challenge ("stale: what changed since <date>?"); the fix is one search and a dated claim, not a hedge. For each problem write a challenge row {"type":"challenge","id":"X${seat.id.slice(1)}-k","claim":"C…","to":"<seat that owns the claim>","text":"…"} and tell that seat with @ in the room.
+For EACH key claim below: re-open at least one of its sources yourself (open the URL) and write a check row: confirmed (the quote is on the page and supports the claim), wrong (quote missing, or page says otherwise), or unreachable. If page reading fails (a login page, a script-rendered page), try the search-engine snippet for that address and curl in your sandbox before writing unreachable; when either shows the quoted words, the check is confirmed. When a claim says more than its quote, ask the owner to narrow it, never to drop it: a true but over-stated finding must stay in the ledger. Then look for what the team skipped: claims resting on one publisher without "single_source", numbers that do not match, outdated dates, contradicting evidence nobody logged.${run.req.multimodal ? ` For every computed claim and every figure in your list, recompute it yourself in your sandbox from its stated inputs and write {"type":"check","claim":"C…","result":"confirmed|wrong","note":"what you got"}; a figure whose numbers you cannot trace is a challenge.` : ""} Check time on every key claim: a missing as_of, an as_of that is not what the source shows, or an old state written as if it were true today is a challenge ("stale: what changed since <date>?"); the fix is one search and a dated claim, not a hedge. For each problem write a challenge row {"type":"challenge","id":"X${seat.id.slice(1)}-k","claim":"C…","to":"<seat that owns the claim>","text":"…"} and tell that seat with @ in the room.
 ${unanswered.length ? `\nUnanswered sub-questions:\n${unanswered.join("\n")}\n` : ""}${gateProblems.length ? `\nThe automatic gate refused the last attempt for these reasons:\n${gateProblems.map((p) => "- " + p).join("\n")}\n` : ""}
 Key claims to attack:
 ${claimDigest(run, mine)}`;
@@ -626,6 +642,13 @@ async function gate(run, attempt) {
   if (!v.keyClaims.length) problems.push("no key claims in the ledger");
   let confirmed = 0;
   for (const c of v.keyClaims) {
+    if (c.computed) {
+      // a computed number stands on its method and inputs, and on someone having recomputed it
+      if (!c.method || !(c.inputs || []).length) problems.push(`${c.id} (${c.by}) is computed but gives no method or inputs`);
+      if (v.checks.some((k) => k.claim === c.id && k.result === "confirmed")) confirmed++;
+      else problems.push(`${c.id} (${c.by}) is a computed number nobody has recomputed`);
+      continue;
+    }
     const src = v.sourcesOf(c.id);
     const agree = src.filter((s) => s.stance !== "contradicts");
     const pubs = new Set(agree.map((s) => (s.publisher || "").toLowerCase().trim()).filter(Boolean));
@@ -692,7 +715,10 @@ function ledgerDigest(run, { branch = null, compact = false } = {}) {
         return `- ${cid}${c.key ? " key" : ""}${c.single_source ? " single-source" : ""}${c.kind ? ` ${c.kind}` : ""}${c.as_of ? ` as of ${c.as_of}` : ""}${c.rechecked ? ` (rechecked ${c.rechecked.on || ""}: ${c.rechecked.found || ""})` : ""}: ${c.text} | publishers: ${pubs || "none"}${contra ? ` | ${contra} contradicting` : ""} | ${conf ? "confirmed" : "unconfirmed"}`;
       }).join("\n")
     : claimDigest(run, claims);
-  return `QUESTIONS AND ANSWERS\n${qs.join("\n")}\n\nCLAIMS WITH SOURCES AND CHECKS\n${cd}\n\nSEARCHED, NOT FOUND\n${nf.join("\n") || "(none)"}\n\nRED-TEAM CHALLENGES\n${ch.join("\n") || "(none)"}`;
+  const figs = new Map();
+  for (const r of run.rows) if (r.type === "figure" && r.id && inBranch(r.by)) figs.set(r.id, r);
+  const figText = figs.size ? `\n\nFIGURES (place one where it carries the argument by writing its id alone on a line in double braces, like {{${[...figs.keys()][0]}}}; at most 6 in the whole report; never mention a figure that is not listed here)\n${[...figs.values()].map((f) => `- ${f.id} (${f.kind}, by ${f.by}): ${f.title}. ${f.caption || ""} Claims: ${(f.claims || []).join(", ") || "none"}`).join("\n")}` : "";
+  return `QUESTIONS AND ANSWERS\n${qs.join("\n")}${figText}\n\nCLAIMS WITH SOURCES AND CHECKS\n${cd}\n\nSEARCHED, NOT FOUND\n${nf.join("\n") || "(none)"}\n\nRED-TEAM CHALLENGES\n${ch.join("\n") || "(none)"}`;
 }
 
 // cut a text to a character budget (about 4 characters per token) so huge runs stay inside the model's input window
@@ -999,7 +1025,7 @@ ${line}
 
 You are one of the red-team judges. You do not write the answer; you try to break it, and you decide when the team may stop. This is turn ${n} of your loop.
 1. Re-open sources yourself (open the URL) for key claims that have no confirmed check and write a check row for each: confirmed (the quote is on the page and supports the claim), wrong, or unreachable. If page reading fails (a login page, a script-rendered page), try the search-engine snippet for that address and curl in your sandbox before writing unreachable; when either shows the quoted words, the check is confirmed. When a claim says more than its quote, ask the owner to narrow it, never to drop it: a true but over-stated finding must stay in the ledger.
-2. Look for what the team skipped: parts of the question nobody took, claims on one publisher without "single_source", numbers that disagree, stale dates, contradicting evidence nobody logged. Check time on every key claim: a missing as_of, an as_of that is not what the source shows, or an old state written as if it were true today is a challenge ("stale: what changed since <date>?"); the fix is one search and a dated claim, not a hedge. For each problem write a challenge row {"type":"challenge","id":"X${seat.id.slice(1)}-k","claim":"C…","to":"<seat that owns the claim>","text":"…"}; for a gap nobody covers, say it on the board.
+2. Look for what the team skipped: parts of the question nobody took, claims on one publisher without "single_source", numbers that disagree, stale dates, contradicting evidence nobody logged.${run.req.multimodal ? ` For every computed claim and every figure in your list, recompute it yourself in your sandbox from its stated inputs and write {"type":"check","claim":"C…","result":"confirmed|wrong","note":"what you got"}; a figure whose numbers you cannot trace is a challenge.` : ""} Check time on every key claim: a missing as_of, an as_of that is not what the source shows, or an old state written as if it were true today is a challenge ("stale: what changed since <date>?"); the fix is one search and a dated claim, not a hedge. For each problem write a challenge row {"type":"challenge","id":"X${seat.id.slice(1)}-k","claim":"C…","to":"<seat that owns the claim>","text":"…"}; for a gap nobody covers, say it on the board.
 3. Check how your earlier challenges were resolved.
 ${mineCh.length ? `\nYOUR CHALLENGES:\n${mineCh.map((x) => `- ${x.id} on ${x.claim}: ${x.text.slice(0, 140)} -> ${v.resolutions.get(x.id)?.text?.slice(0, 160) || "NOT RESOLVED YET"}`).join("\n")}\n` : ""}
 KEY CLAIMS WITH NO CONFIRMED CHECK (${unchecked.length} in total; this is your slice, other judges see other slices):

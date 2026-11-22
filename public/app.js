@@ -1,4 +1,5 @@
 import { marked } from '/vendor/marked.esm.js';
+import { placeFigures } from '/figures.js';
 
 // a published copy sets window.GP = { base: '/gprometheus', static: true }: finished runs served as files, no server
 const BASE = window.GP?.base || '';
@@ -81,7 +82,7 @@ function freshState(id) {
   return {
     id, run: null, events: 0, seats: new Map(),
     phase: null, phaseSeen: new Map(), done: null, lastAt: 0,
-    claims: new Map(), sources: new Map(), questions: new Map(), challenges: new Map(),
+    claims: new Map(), sources: new Map(), questions: new Map(), challenges: new Map(), figures: new Map(),
     answers: new Map(), checks: new Map(), resolutions: new Map(), notFound: new Map(), rejected: [],
     turns: [], openTurns: new Map(), gates: [], judges: [], baseline: null, baselineStart: null,
     reports: 0, reportHtml: null, baselineMd: null, baselineHtml: null,
@@ -93,6 +94,7 @@ function ingestRow(r, seat, at) {
   const row = { by: seat, at, ...r };
   switch (row.type) {
     case 'claim': S.claims.set(row.id, row); break;
+    case 'figure': S.figures.set(row.id, row); break;
     case 'source': S.sources.set(row.id, row); break;
     case 'question': S.questions.set(row.id, row); break;
     case 'challenge': S.challenges.set(row.id, row); break;
@@ -188,6 +190,7 @@ async function showAsk() {
           <fieldset class="agents"><legend class="lab"><span>Coordination</span><span class="v" data-v="modehint">code assigns the work</span></legend>
             <div class="seg"><label><input type="radio" name="mode" value="orchestrated" checked><span>Orchestrated</span></label><label><input type="radio" name="mode" value="free"><span>No orchestrator</span></label></div>
           </fieldset>
+          <label class="check"><input type="checkbox" name="multimodal"> Multi-modal: agents may run code, compute and draw charts</label>
           <label class="check"><input type="checkbox" name="baseline" checked> Compare with Google Deep Research</label>
         </div>
       </div>
@@ -214,7 +217,7 @@ async function showAsk() {
   f.addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = $('button[type=submit]', f);
-    const body = { question: f.question.value.trim(), agents: +f.agents.value, minutes: +f.minutes.value, baseline: f.baseline.checked, mode: f.mode.value, ...(f.seat_model.value === 'mix' ? { models: ['gemini-4-hydrogen', 'gemini-4-hydrogen', 'gemini-4-neon', 'gemini-4-hydrogen', 'gemini-4-hydrogen', 'gemini-4-neon', 'gemini-4-carbon', 'gemini-4-argon'] } : { seat_model: f.seat_model.value }), ...(+f.agents.value > 128 ? { max_rounds: 1, concurrency: 256 } : {}) };
+    const body = { question: f.question.value.trim(), agents: +f.agents.value, minutes: +f.minutes.value, baseline: f.baseline.checked, multimodal: f.multimodal.checked, mode: f.mode.value, ...(f.seat_model.value === 'mix' ? { models: ['gemini-4-hydrogen', 'gemini-4-hydrogen', 'gemini-4-neon', 'gemini-4-hydrogen', 'gemini-4-hydrogen', 'gemini-4-neon', 'gemini-4-carbon', 'gemini-4-argon'] } : { seat_model: f.seat_model.value }), ...(+f.agents.value > 128 ? { max_rounds: 1, concurrency: 256 } : {}) };
     if (body.question.length < 8) { $('#err').textContent = 'A little longer, please.'; return; }
     btn.disabled = true; btn.textContent = 'Starting';
     try {
@@ -682,7 +685,7 @@ function mdToHtml(md, withChips) {
     for (const a of [...n.attributes]) if (/^on/i.test(a.name) || (/^(href|src)$/i.test(a.name) && /^\s*javascript:/i.test(a.value))) n.removeAttribute(a.name);
     if (n.tagName === 'A') { n.target = '_blank'; n.rel = 'noopener'; }
   });
-  return t.innerHTML;
+  return withChips ? placeFigures(t.innerHTML, S.figures) : t.innerHTML;
 }
 let reportTry = 0;
 async function loadReport(quiet) {

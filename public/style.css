@@ -373,3 +373,36 @@ fieldset.agents legend { width: 100%; padding: 0; }
 .seg label:first-child span { border-left: 0; }
 .seg input:checked + span { background: var(--fg); color: var(--bg); }
 .seg input:focus-visible + span { outline: 2px solid currentColor; outline-offset: -3px; }
+
+/* figures (multi-modal mode): categorical slots validated for both surfaces; text stays in text tokens */
+:root { --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500; } }
+:root[data-theme="dark"] { --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500; }
+figure.fig { margin: 28px 0; max-width: 680px; }
+figure.fig svg { width: 100%; height: auto; display: block; overflow: visible; }
+figure.fig img { max-width: 100%; border: 1px solid var(--line); border-radius: 4px; }
+figure.fig .grid { stroke: var(--line); stroke-width: 1; }
+figure.fig .axis { stroke: var(--muted); stroke-width: 1; }
+figure.fig .tick, figure.fig .lab { fill: var(--muted); font: 11px var(--mono); }
+figure.fig .end { fill: var(--fg); font: 500 11.5px var(--mono); }
+figure.fig .line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+figure.fig .dot { stroke: var(--bg); stroke-width: 2; }
+figure.fig .bar { stroke: var(--bg); stroke-width: 1; }
+figure.fig .s1 { stroke: var(--series-1); } figure.fig .s2 { stroke: var(--series-2); } figure.fig .s3 { stroke: var(--series-3); } figure.fig .s4 { stroke: var(--series-4); }
+figure.fig .dot.s1, figure.fig .bar.s1 { fill: var(--series-1); } figure.fig .dot.s2, figure.fig .bar.s2 { fill: var(--series-2); }
+figure.fig .dot.s3, figure.fig .bar.s3 { fill: var(--series-3); } figure.fig .dot.s4, figure.fig .bar.s4 { fill: var(--series-4); }
+figure.fig .dot, figure.fig .bar { stroke: var(--bg); }
+figure.fig .dot:hover, figure.fig .bar:hover { opacity: .75; }
+.fig-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font: 12px var(--mono); color: var(--muted); margin-bottom: 6px; }
+.fig-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.fig-legend .k1 { background: var(--series-1); } .fig-legend .k2 { background: var(--series-2); } .fig-legend .k3 { background: var(--series-3); } .fig-legend .k4 { background: var(--series-4); }
+figure.fig figcaption { font-size: 14px; line-height: 1.45; color: var(--muted); margin-top: 8px; }
+figure.fig figcaption b { color: var(--fg); font-weight: 600; }
+.fig-meta { font: 11px var(--mono); margin-left: 4px; }
+.fig-method { display: block; margin-top: 4px; font-size: 13px; }
+.fig-data { margin-top: 8px; font-size: 13px; }
+.fig-data summary { cursor: pointer; color: var(--muted); font: 12px var(--mono); }
+.fig-scroll { overflow-x: auto; max-height: 260px; overflow-y: auto; margin-top: 6px; }
+.fig-data table { border-collapse: collapse; font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+.fig-data th, .fig-data td { padding: 3px 12px 3px 0; text-align: right; border-bottom: 1px solid var(--line); }
+.fig-data th:first-child, .fig-data td:first-child { text-align: left; }
