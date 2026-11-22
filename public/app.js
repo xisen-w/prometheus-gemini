@@ -1,5 +1,10 @@
 import { marked } from '/vendor/marked.esm.js';
 
+// a published copy sets window.GP = { base: '/gprometheus', static: true }: finished runs served as files, no server
+const BASE = window.GP?.base || '';
+const STATIC = !!window.GP?.static;
+const fileUrl = (id, name) => (STATIC ? `${BASE}/data/${encodeURIComponent(id)}/${name}` : `/api/runs/${encodeURIComponent(id)}/file/${name}`);
+
 // ---------- helpers
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -216,18 +221,19 @@ async function showAsk() {
       const r = await fetch('/api/runs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j.id) throw new Error(j.error || `Server said ${r.status}`);
-      location.assign(`/run/${encodeURIComponent(j.id)}`);
+      location.assign(`${BASE}/run/${encodeURIComponent(j.id)}`);
     } catch (err) {
       $('#err').textContent = err.message; btn.disabled = false; btn.textContent = 'Start';
     }
   });
   try {
-    const runs = await (await fetch('/api/runs')).json();
+    const runs = await (await fetch(STATIC ? `${BASE}/data/runs.json` : '/api/runs')).json();
+    if (STATIC) { const f = $('#askf'); if (f) f.hidden = true; const h = $('.ask h1'); if (h) h.textContent = 'Runs'; const l = $('.ask .lede'); if (l) l.textContent = 'Finished runs of the swarm. Open one to read the report and check every claim.'; }
     if (Array.isArray(runs) && runs.length) {
       const past = $('#past');
       past.hidden = false;
-      $('ol', past).innerHTML = runs.slice(0, 12).map((r) => `
-        <li><a href="/run/${encodeURIComponent(r.id)}">
+      $('ol', past).innerHTML = runs.slice(0, STATIC ? 60 : 12).map((r) => `
+        <li><a href="${BASE}/run/${encodeURIComponent(r.id)}">
           <span class="pq">${esc(r.question || r.id)}</span>
           <span class="pm">${esc(shortDate(r.started_at))} · ${statusWord(r.status)}</span>
         </a></li>`).join('');
@@ -264,7 +270,7 @@ const TALLY = [
 function openRun(id) {
   S = freshState(id);
   touch();
-  $('#topnav').innerHTML = '<a href="/">New question</a>';
+  $('#topnav').innerHTML = `<a href="${BASE}/">${STATIC ? 'All runs' : 'New question'}</a>`;
   app.innerHTML = `
   <section class="run">
     <header class="run-head">
@@ -299,7 +305,18 @@ function setTab(k, push) {
 
 // ---------- stream
 let es = null, queue = [], scheduled = false, replaying = true, gotDone = false, ticker = null;
+async function connectStatic() {
+  // the whole event file, gzipped; fed through the same handler as the live stream
+  try {
+    const r = await fetch(fileUrl(S.id, 'events.ndjson.gz'));
+    if (!r.ok) throw new Error(String(r.status));
+    const text = await new Response(r.body.pipeThrough(new DecompressionStream('gzip'))).text();
+    for (const line of text.split('\n')) { if (!line.trim()) continue; try { queue.push(JSON.parse(line)); } catch {} }
+    flush();
+  } catch { $('#q').textContent = 'This run is not available.'; }
+}
 function connect() {
+  if (STATIC) return connectStatic();
   es = new EventSource(`/api/runs/${encodeURIComponent(S.id)}/stream`);
   es.onopen = () => {
     if (S.events > 0 && !S.done) {
@@ -666,7 +683,7 @@ function mdToHtml(md, withChips) {
 let reportTry = 0;
 async function loadReport(quiet) {
   try {
-    const r = await fetch(`/api/runs/${encodeURIComponent(S.id)}/file/report.md`, { cache: 'no-store' });
+    const r = await fetch(fileUrl(S.id, 'report.md'), { cache: 'no-store' });
     if (!r.ok) throw new Error(r.status);
     const md = await r.text();
     S.reportHtml = mdToHtml(md, true);
@@ -680,7 +697,7 @@ async function loadReport(quiet) {
 }
 async function loadBaseline() {
   try {
-    const r = await fetch(`/api/runs/${encodeURIComponent(S.id)}/file/baseline.md`, { cache: 'no-store' });
+    const r = await fetch(fileUrl(S.id, 'baseline.md'), { cache: 'no-store' });
     if (!r.ok) throw new Error(r.status);
     S.baselineMd = await r.text();
     S.baselineHtml = mdToHtml(S.baselineMd, false);
@@ -917,7 +934,7 @@ function renderDrawer(id) {
 }
 
 // ---------- routing
-const route = location.pathname;
+const route = location.pathname.startsWith(BASE) ? location.pathname.slice(BASE.length) : location.pathname;
 const runMatch = route.match(/^\/run\/([^/]+)/);
 if (runMatch) openRun(decodeURIComponent(runMatch[1]));
 else showAsk();

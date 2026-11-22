@@ -317,6 +317,8 @@ Rules:
 - quote is copied character-for-character from the page you opened. The system re-opens pages and searches for the quote; a quote it cannot find fails the whole submission.
 - The subject's own pages come first. When the question is about a specific organisation, product or person, what its own site, app, legal documents, job postings and filings say outranks any press report. Read them exhaustively rather than sampling: fetch sitemap.xml and robots.txt, try likely paths on every host you find, and when page reading returns little (a login page, a script-rendered page) use your sandbox shell: curl the page, read its HTML source, its title and meta tags, and the script files it loads, and look for product names, feature names, API routes and copy. The wording of a login page, a document in a trust centre, a job title, or a subprocessor list is evidence about what is being built: log it as a key claim and say in the room what it implies.
 - Check that a page is about the right subject: other organisations can share the name. Drop sources about a namesake.
+- The ledger is the only thing the writer reads. A finding you only mention in the room is lost. Whatever you learn that bears on THE QUESTION goes into the ledger as a claim with its source and quote, even when it is outside your own sub-questions; say in the room whose sub-question it helps.
+- A page that needs a login, or that you cannot re-open, is still evidence: its address, its title, and the words on its sign-in screen say what exists. Log exactly what is visible (and how you saw it: the page itself, a search-engine snippet, or curl in your sandbox).
 - One fact per claim. A claim states only what its quoted sentence itself says: one number, one date, one event. Do not pack several facts, a list, or your own summary into one claim; split them into separate claims, each with its own quote. An independent checker re-opens the page and fails any claim that says more than the page.
 - A key claim (one the answer rests on) needs two independent publishers. If you can only find one, set "single_source": true.
 - stance is about the claim on that row: "contradicts" if the source disagrees with that claim. Actively look for the strongest contradicting evidence.
@@ -525,7 +527,7 @@ async function redteam(run, round, gateProblems = [], branch = null) {
     const input = `${roomFor(run, seat)}
 
 You are the red team. You do not write the answer; you try to break it before anyone declares it done.
-For EACH key claim below: re-open at least one of its sources yourself (open the URL) and write a check row: confirmed (the quote is on the page and supports the claim), wrong (quote missing, or page says otherwise), or unreachable. Then look for what the team skipped: claims resting on one publisher without "single_source", numbers that do not match, outdated dates, contradicting evidence nobody logged. For each problem write a challenge row {"type":"challenge","id":"X${seat.id.slice(1)}-k","claim":"C…","to":"<seat that owns the claim>","text":"…"} and tell that seat with @ in the room.
+For EACH key claim below: re-open at least one of its sources yourself (open the URL) and write a check row: confirmed (the quote is on the page and supports the claim), wrong (quote missing, or page says otherwise), or unreachable. If page reading fails (a login page, a script-rendered page), try the search-engine snippet for that address and curl in your sandbox before writing unreachable; when either shows the quoted words, the check is confirmed. When a claim says more than its quote, ask the owner to narrow it, never to drop it: a true but over-stated finding must stay in the ledger. Then look for what the team skipped: claims resting on one publisher without "single_source", numbers that do not match, outdated dates, contradicting evidence nobody logged. For each problem write a challenge row {"type":"challenge","id":"X${seat.id.slice(1)}-k","claim":"C…","to":"<seat that owns the claim>","text":"…"} and tell that seat with @ in the room.
 ${unanswered.length ? `\nUnanswered sub-questions:\n${unanswered.join("\n")}\n` : ""}${gateProblems.length ? `\nThe automatic gate refused the last attempt for these reasons:\n${gateProblems.map((p) => "- " + p).join("\n")}\n` : ""}
 Key claims to attack:
 ${claimDigest(run, mine)}`;
@@ -549,7 +551,7 @@ async function fix(run, round, problems = [], branch = null) {
       if (!ch.length && !wrong.length && !mineProblems.length && !room && !rejected.length) return null;
       const input = `${room}
 
-Fix what was raised against your work. For each challenge: fix the claim/source (append with the same id), add sources, or drop it, then write a resolution row {"type":"resolution","challenge":"X…","text":"what you did"}. Answer any unanswered sub-question you own.
+Fix what was raised against your work. For each challenge: fix the claim/source (append with the same id) or add sources, then write a resolution row. When the challenge says the claim goes beyond its quote, NARROW the claim to exactly what the quote shows and keep it; do not drop it. Drop a claim only when its quote is not real or is about a different subject. A source being login-gated or unreachable for the checker is not a reason to drop: say how you saw it. Then write the resolution row {"type":"resolution","challenge":"X…","text":"what you did"}. Answer any unanswered sub-question you own.
 ${ch.length ? `\nOpen challenges:\n${ch.map((x) => `- ${x.id} on ${x.claim} by ${x.by}: ${x.text}`).join("\n")}` : ""}
 ${wrong.length ? `\nChecks that did not confirm your sources:\n${wrong.map((k) => `- ${k.source}: ${k.result} by ${k.by}: ${k.note || ""}`).join("\n")}` : ""}
 ${mineProblems.length ? `\nGate problems:\n${mineProblems.map((p) => "- " + p).join("\n")}` : ""}
@@ -627,6 +629,19 @@ async function gate(run, attempt) {
     if (src.some((s) => v.checksOf(s.id).some((k) => k.result === "confirmed"))) confirmed++;
     else problems.push(`${c.id} (${c.by}) has no confirmed red-team check`);
   }
+  // leads lost between the room and the ledger: an address several seats mentioned that no kept source cites
+  const kept = new Set([...v.sources.values()].filter(v.kept).map((x) => { try { const u = new URL(x.url); return u.hostname.replace(/^www\./, "") + u.pathname.replace(/\/$/, ""); } catch { return ""; } }));
+  const mentions = new Map();
+  for (const m of run.room) {
+    if (!/^[RX]\d+$/.test(m.seat)) continue;
+    for (const raw of m.text.match(/https?:\/\/[^\s)"'<>\]]+/g) || []) {
+      let k; try { const u = new URL(raw.replace(/[.,;:]+$/, "")); k = u.hostname.replace(/^www\./, "") + u.pathname.replace(/\/$/, ""); } catch { continue; }
+      if (!mentions.has(k)) mentions.set(k, { url: raw.replace(/[.,;:]+$/, ""), seats: new Set(), first: m.seat });
+      mentions.get(k).seats.add(m.seat);
+    }
+  }
+  const orphans = [...mentions].filter(([k, x]) => x.seats.size >= 3 && !kept.has(k)).sort((a, b) => b[1].seats.size - a[1].seats.size).slice(0, 12);
+  for (const [, x] of orphans) problems.push(`lead ${x.url} was mentioned in the room by ${x.seats.size} seats but no kept source in the ledger cites it: log what it shows as a claim, or say why it is not about the subject (${x.first})`);
   for (const x of v.openChallenges) problems.push(`challenge ${x.id} on ${x.claim} is unresolved (${x.to || v.claims.get(x.claim)?.by || "?"})`);
   // quote spot-check on a sample of key-claim sources
   const pool = v.keyClaims.flatMap((c) => v.sourcesOf(c.id).filter((s) => s.stance !== "contradicts"));
@@ -638,7 +653,7 @@ async function gate(run, attempt) {
     if (r === "found") found++;
     if (r === "missing") problems.push(`quote of ${s.id} (${s.by}) was not found on ${s.url}`);
   }
-  const stats = { key_claims: v.keyClaims.length, confirmed, open_challenges: v.openChallenges.length, quotes_checked: results.length, quotes_reached: reached, quotes_found: found };
+  const stats = { orphan_leads: orphans.length, key_claims: v.keyClaims.length, confirmed, open_challenges: v.openChallenges.length, quotes_checked: results.length, quotes_reached: reached, quotes_found: found };
   const pass = problems.length === 0;
   run.emit({ t: "gate", attempt, pass, problems, stats });
   run.phaseSeen?.add(`gate:${attempt}`);
@@ -891,7 +906,7 @@ ${boardFor(run, seat)}
 ${line}
 
 You are one of the red-team judges. You do not write the answer; you try to break it, and you decide when the team may stop. This is turn ${n} of your loop.
-1. Re-open sources yourself (open the URL) for key claims that have no confirmed check and write a check row for each: confirmed (the quote is on the page and supports the claim), wrong, or unreachable.
+1. Re-open sources yourself (open the URL) for key claims that have no confirmed check and write a check row for each: confirmed (the quote is on the page and supports the claim), wrong, or unreachable. If page reading fails (a login page, a script-rendered page), try the search-engine snippet for that address and curl in your sandbox before writing unreachable; when either shows the quoted words, the check is confirmed. When a claim says more than its quote, ask the owner to narrow it, never to drop it: a true but over-stated finding must stay in the ledger.
 2. Look for what the team skipped: parts of the question nobody took, claims on one publisher without "single_source", numbers that disagree, stale dates, contradicting evidence nobody logged. For each problem write a challenge row {"type":"challenge","id":"X${seat.id.slice(1)}-k","claim":"C…","to":"<seat that owns the claim>","text":"…"}; for a gap nobody covers, say it on the board.
 3. Check how your earlier challenges were resolved.
 ${mineCh.length ? `\nYOUR CHALLENGES:\n${mineCh.map((x) => `- ${x.id} on ${x.claim}: ${x.text.slice(0, 140)} -> ${v.resolutions.get(x.id)?.text?.slice(0, 160) || "NOT RESOLVED YET"}`).join("\n")}\n` : ""}
