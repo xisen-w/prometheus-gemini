@@ -387,7 +387,7 @@ function handle(ev, animate) {
       break;
     case 'review':
       S.reviews = (S.reviews || []).concat(ev);
-      roomAdd(simpleLine(ev, `<b>Team review, round ${esc(ev.round)}</b> · <b class="${ev.approval >= 0.9 ? 'pass' : 'fail'}">${esc(ev.ok)} of ${esc(ev.voters)} would sign it (${Math.round(ev.approval * 100)}%)</b> <span class="faint">answers ${esc(ev.scores?.answers)}/5 · insight ${esc(ev.scores?.insight)}/5 · reads ${esc(ev.scores?.reads)}/5 · ${esc(ev.issues)} issues · ${esc(ev.missing)} findings reported missing</span>${(ev.sample || []).length ? `<ul>${ev.sample.map((i) => `<li><span class="faint">${esc(i.where)} · ${esc(i.kind)}</span> ${esc(i.problem)}</li>`).join('')}</ul>` : ''}`), animate);
+      roomAdd(simpleLine(ev, `<b>Team review, round ${esc(ev.round)}</b> · <b class="${ev.approval >= 0.9 ? 'pass' : 'fail'}">${esc(ev.ok)} of ${esc(ev.voters)} would sign it (${Math.round(ev.approval * 100)}%)</b>${ev.signed != null ? ` <span class="faint">${esc(ev.signed)} as it stands · ${esc(ev.voters - ev.ok)} would block · ${esc(ev.blocking)} blocking issues</span>` : ''} <span class="faint">answers ${esc(ev.scores?.answers)}/5 · insight ${esc(ev.scores?.insight)}/5 · reads ${esc(ev.scores?.reads)}/5 · ${esc(ev.issues)} issues · ${esc(ev.missing)} findings reported missing</span>${(ev.sample || []).length ? `<ul>${ev.sample.map((i) => `<li><span class="faint">${esc(i.where)} · ${esc(i.kind)}</span> ${esc(i.problem)}</li>`).join('')}</ul>` : ''}`), animate);
       break;
     case 'vote':
       S.votes = { yes: ev.yes, of: ev.of };

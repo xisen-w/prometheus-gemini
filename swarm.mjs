@@ -954,7 +954,7 @@ async function mockModel(input, system) {
   await sleep(500);
   if (system.includes("plan deep research")) return { text: JSON.stringify({ questions: [1, 2, 3, 4, 5, 6].map((i) => ({ id: `Q0-${i}`, text: `Mock sub-question ${i}`, parent: null })) }), id: "mock_p", searches: [], urls: [], tokens: 100 };
   if (system.includes("criteria a research report will be judged on")) return { text: '{"criteria":["Mock: a clear answer to the question, first.","Mock: two sources per key fact.","Mock: evidence against."]}', id: "mock_c", searches: [], urls: [], tokens: 100 };
-  if (system.includes("agents who researched this question. The team's draft report is written")) return { text: JSON.stringify({ vote: Math.random() < (input.includes("REVISED-ONCE") ? 0.97 : 0.6) ? "ok" : "revise", answers: 4, insight: 3, reads: 3, issues: [{ where: "opening", kind: "buried", problem: "mock issue", fix: "mock fix" }], missing: [], sharpen: "mock sharpen" }), id: "mock_rv", searches: [], urls: [], tokens: 50 };
+  if (system.includes("agents who researched this question. The team's draft report is written")) return { text: JSON.stringify({ vote: Math.random() < (input.includes("REVISED-ONCE") ? 0.97 : 0.6) ? "minor" : "block", answers: 4, insight: 3, reads: 3, issues: [{ where: "opening", kind: "buried", problem: "mock issue", fix: "mock fix" }], missing: [], sharpen: "mock sharpen" }), id: "mock_rv", searches: [], urls: [], tokens: 50 };
   if (system.includes("You are the lead editor")) return { text: "# Mock report\n\nREVISED-ONCE answer.\n", id: "mock_ed", searches: [], urls: [], tokens: 50 };
   if (system.includes("You are a reader with one minute")) return { text: '{"asks":[{"ask":"mock","answer":"mock","stated":true}]}', id: "mock_r", searches: [], urls: [], tokens: 50 };
   if (system.includes("You are the judge")) return { text: '{"checks":[{"criterion":1,"met":true,"evidence":"mock"},{"criterion":2,"met":true,"evidence":"mock"},{"criterion":3,"met":true,"evidence":"mock"}]}', id: "mock_j", searches: [], urls: [], tokens: 100 };
@@ -1330,11 +1330,11 @@ async function reviewRound(run, report, round) {
   const branchIds = (run.branches || []).map((b) => b.id);
   const sys = (seat) => `You are ${seat.id}, one of the ${readers.length} agents who researched this question. The team's draft report is written. Read it the way the person who asked would: they are busy, they already know the basic facts, and they want judgement and insight, not a pile of information. Then judge it honestly; a draft that only collects facts is not good enough, and neither is one that is hard to read. You get the opening that everyone reads, one section to read closely, and the findings you logged yourself.
 Return ONLY JSON:
-{"vote":"ok" | "revise",   // ok only if you would put your name on it exactly as it stands
+{"vote":"sign" | "minor" | "block",   // sign: good as it stands. minor: you would sign it; what you list would improve it but the reader is not misled without it. block: it must not go out like this, because something in it is wrong, contradicts itself, misses what was asked, or hides the answer
  "answers":1-5,   // does the opening answer what was asked, where the reader looks first
  "insight":1-5,   // does it tell the reader something they could not get by reading the sources themselves: a judgement, a ranking with reasons, a cause, a comparison, a warning
  "reads":1-5,     // length, order, tone: a memo a person wants to read, or an audit log
- "issues":[{"where":"opening" | "<the section's heading>","kind":"wrong | inconsistent | missing | buried | padding | unclear | no judgement","problem":"specific; quote up to 12 words of the draft when you can","fix":"what to write instead, or what to cut"}],   // at most 5, the ones that matter most; an inconsistency between the opening and your section is the most important kind
+ "issues":[{"where":"opening" | "<the section's heading>","blocking":true | false,"kind":"wrong | inconsistent | missing | buried | padding | unclear | no judgement","problem":"specific; quote up to 12 words of the draft when you can","fix":"what to write instead, or what to cut"}],   // at most 5, the ones that matter most; mark blocking only what would mislead the reader or leave their question unanswered; a contradiction between the opening and your section is blocking; a finding of yours that is not in the report is blocking only if the answer would change with it
  "missing":["ids of YOUR OWN findings that matter for the answer and are absent or misstated in what you read"],
  "sharpen":"the one thing this report should say more sharply, written as a sentence the report could use"}
 Write problem, fix and sharpen in the language of the question.`;
@@ -1347,21 +1347,24 @@ Write problem, fix and sharpen in the language of the question.`;
     try {
       const { res, json } = await plainJson(seat.model || SEAT_MODEL, sys(seat), `QUESTION: ${run.req.question}\n${criteriaText(run) ? `WHAT THE ANSWER IS JUDGED ON:\n${criteriaText(run)}\n` : ""}\nOPENING OF THE DRAFT:\n${fit(opening, 30000)}\n\nSECTION YOU READ CLOSELY:\n${si >= 0 ? fit(sections[si], 60000) : "(the report has no sections)"}\n\nSECTION HEADINGS OF THE WHOLE DRAFT: ${sections.map(headingOf).join(" | ")}\n\nYOUR OWN FINDINGS:\n${mine || "(none logged)"}`);
       run.totals.tokens += res.tokens;
-      if (!json || !["ok", "revise"].includes(json.vote)) return null;
+      if (!json || !["sign", "minor", "block", "ok", "revise"].includes(json.vote)) return null;
+      json.vote = json.vote === "ok" ? "sign" : json.vote === "revise" ? "block" : json.vote;
       return { seat: seat.id, section: si, ...json };
     } catch { return null; }
   }));
   const got = reviews.filter(Boolean);
-  const ok = got.filter((r) => r.vote === "ok").length;
+  const signed = got.filter((r) => r.vote === "sign").length;
+  const ok = got.filter((r) => r.vote !== "block").length;   // would sign, with or without minor edits
   const avg = (k) => +(got.reduce((a, r) => a + (Number(r[k]) || 0), 0) / Math.max(1, got.length)).toFixed(2);
-  const issues = got.flatMap((r) => (r.issues || []).filter((i) => i && i.problem).map((i) => ({ ...i, seat: r.seat, section: r.section, vote: r.vote })));
+  const issues = got.flatMap((r) => (r.issues || []).filter((i) => i && i.problem).map((i) => ({ ...i, seat: r.seat, section: r.section, vote: i.blocking === true || r.vote === "block" ? "revise" : "minor" })));
+  const blocking = issues.filter((i) => i.blocking === true).length;
   const kinds = {};
   for (const i of issues) kinds[String(i.kind || "other").trim()] = (kinds[String(i.kind || "other").trim()] || 0) + 1;
   const missing = new Map();
   for (const r of got) for (const id of r.missing || []) if (v.claims.has(id)) missing.set(id, (missing.get(id) || 0) + 1);
-  const summary = { round, voters: got.length, ok, approval: got.length ? +(ok / got.length).toFixed(3) : 0, scores: { answers: avg("answers"), insight: avg("insight"), reads: avg("reads") }, issues: issues.length, kinds, missing: missing.size, sample: issues.filter((i) => i.vote === "revise").slice(0, 6).map((i) => ({ where: i.where, kind: i.kind, problem: String(i.problem).slice(0, 200) })) };
+  const summary = { round, voters: got.length, signed, blocking, ok, approval: got.length ? +(ok / got.length).toFixed(3) : 0, scores: { answers: avg("answers"), insight: avg("insight"), reads: avg("reads") }, issues: issues.length, kinds, missing: missing.size, sample: issues.filter((i) => i.blocking === true).concat(issues.filter((i) => i.blocking !== true && i.vote === "revise")).slice(0, 6).map((i) => ({ where: i.where, kind: i.kind, problem: String(i.problem).slice(0, 200) })) };
   run.emit({ t: "review", ...summary });
-  run.say("system", `Review round ${round}: ${ok} of ${got.length} readers would sign the draft (${Math.round(summary.approval * 100)}%). Answers ${summary.scores.answers}/5, insight ${summary.scores.insight}/5, reads ${summary.scores.reads}/5. ${issues.length} issues raised; ${missing.size} findings reported missing or misstated.`);
+  run.say("system", `Review round ${round}: ${ok} of ${got.length} readers would sign the draft (${Math.round(summary.approval * 100)}%; ${signed} as it stands, ${ok - signed} with minor edits, ${got.length - ok} would block it, ${blocking} blocking issues). Answers ${summary.scores.answers}/5, insight ${summary.scores.insight}/5, reads ${summary.scores.reads}/5. ${issues.length} issues raised; ${missing.size} findings reported missing or misstated.`);
   fs.writeFileSync(path.join(run.dir, `review.${round}.json`), JSON.stringify({ summary, reviews: got }, null, 1));
   return { got, issues, missing, summary, opening, sections };
 }
@@ -1374,7 +1377,7 @@ async function revise(run, report, rv, round) {
   const forSection = (si) => uniq(issues.filter((i) => !isOpening(i) && (i.section === si || headingOf(sections[si]).startsWith(String(i.where || "").trim().slice(0, 24))))).sort((a, b) => (a.vote === "revise" ? 0 : 1) - (b.vote === "revise" ? 0 : 1)).slice(0, 30);
   const sharpen = uniq(got.filter((r) => r.sharpen).map((r) => ({ problem: r.sharpen, seat: r.seat }))).slice(0, 30);
   const missList = [...missing].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([id]) => id);
-  const say = (i) => `- [${i.kind || "issue"}] ${i.problem}${i.fix ? ` -> ${i.fix}` : ""} (${i.seat})`;
+  const say = (i) => `- [${i.vote === "revise" ? "BLOCKING " : ""}${i.kind || "issue"}] ${i.problem}${i.fix ? ` -> ${i.fix}` : ""} (${i.seat})`;
   // sections with issues are edited in parallel, each against its own evidence
   const newSections = await Promise.all(sections.map(async (sec, si) => {
     const list = forSection(si);
@@ -1382,7 +1385,7 @@ async function revise(run, report, rv, round) {
     const ids = tagsIn(sec);
     const miss = missList.filter((id) => v.claims.get(id) && (run.seats.find((x) => x.id === v.claims.get(id).by)?.branch === (run.branches || [])[si]?.id || !ids.length)).slice(0, 12);
     try {
-      const res = await modelCall(`QUESTION: ${run.req.question}\n\nSECTION:\n${fit(sec, 200000)}\n\nWHAT THE READERS SAID ABOUT IT:\n${list.map(say).join("\n")}\n${miss.length ? `\nFINDINGS THEIR AUTHORS SAY ARE MISSING OR MISSTATED HERE:\n${claimDigest(run, miss)}\n` : ""}`, `You are the editor of one section of a research report. Its readers, who researched the question themselves, have said what is wrong with it. Revise it: fix what is wrong or inconsistent, bring in the missing findings (only from the evidence given), move what was buried to where it is seen, state the judgement the readers asked for and give its reasons, and cut what they called padding. Do not make it longer except to add a missing finding. Keep every claim tag, link and contact channel that still belongs. Add no fact that is not in the section or the evidence given. Write in the language of the question. Output only the revised section, starting with its "## " heading.`);
+      const res = await modelCall(`QUESTION: ${run.req.question}\n\nSECTION:\n${fit(sec, 200000)}\n\nWHAT THE READERS SAID ABOUT IT:\n${list.map(say).join("\n")}\n${miss.length ? `\nFINDINGS THEIR AUTHORS SAY ARE MISSING OR MISSTATED HERE:\n${claimDigest(run, miss)}\n` : ""}`, `You are the editor of one section of a research report. Its readers, who researched the question themselves, have said what is wrong with it. Revise it. The issues are listed with the blocking ones first: fix every blocking issue you find valid against the evidence; apply a minor one only when it costs nothing. Fix what is wrong or contradicts another part, move what was buried to where it is seen, state the judgement the readers asked for and give its reasons, and cut what they called padding. Do not remove a finding or a person to save space, and do not introduce a new rule, label or number that other sections would then contradict. Do not make it longer except to add a missing finding. Keep every claim tag, link and contact channel that still belongs. Add no fact that is not in the section or the evidence given. Write in the language of the question. Output only the revised section, starting with its "## " heading.`);
       run.totals.tokens += res.tokens;
       const out = res.text.trim().replace(/^```\w*\n?|```$/g, "").trim();
       return out.startsWith("## ") && out.length > 200 ? out + "\n\n" : sec;
