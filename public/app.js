@@ -1,5 +1,6 @@
 import { marked } from '/vendor/marked.esm.js';
 import { placeFigures } from '/figures.js';
+import { protectMath } from '/mathmd.js';
 
 // a published copy sets window.GP = { base: '/gprometheus', static: true }: finished runs served as files, no server
 const BASE = window.GP?.base || '';
@@ -679,11 +680,12 @@ const markDirty = (k) => { if (S.tab === k) renderPane(k, true); else S.dirty.ad
 // Report
 const TAG_RE = /\[((?:C\d+-\d+)(?:\s*[,;]\s*C\d+-\d+)*)\]/g;
 function mdToHtml(md, withChips) {
-  let src = String(md || '');
+  const math = protectMath(String(md || ''));
+  let src = math.src;
   if (withChips) src = src.replace(TAG_RE, (m, ids) => ids.split(/\s*[,;]\s*/).map((id) => `<button class="cite" data-claim="${id}" type="button">${id}</button>`).join(''));
   const html = marked.parse(String(src).replace(/~/g, '\\~'), { gfm: true, breaks: false });
   const t = document.createElement('template');
-  t.innerHTML = html;
+  t.innerHTML = math.restore(html);
   t.content.querySelectorAll('script,style,iframe,object,embed,link,meta,form').forEach((n) => n.remove());
   t.content.querySelectorAll('*').forEach((n) => {
     for (const a of [...n.attributes]) if (/^on/i.test(a.name) || (/^(href|src)$/i.test(a.name) && /^\s*javascript:/i.test(a.value))) n.removeAttribute(a.name);

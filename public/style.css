@@ -406,3 +406,7 @@ figure.fig figcaption b { color: var(--fg); font-weight: 600; }
 .fig-data table { border-collapse: collapse; font: 12px var(--mono); font-variant-numeric: tabular-nums; }
 .fig-data th, .fig-data td { padding: 3px 12px 3px 0; text-align: right; border-bottom: 1px solid var(--line); }
 .fig-data th:first-child, .fig-data td:first-child { text-align: left; }
+
+/* math */
+.katex { font-size: 1.02em; }
+.math-block { overflow-x: auto; margin: 14px 0; }

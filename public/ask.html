@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ask · Prometheus on Gemini</title>
+<link rel="stylesheet" href="/vendor/katex/katex.min.css">
 <link rel="stylesheet" href="/style.css">
 <style>
   .simple { max-width: 760px; margin: 0 auto; padding: 40px 16px 96px; }
@@ -60,13 +61,16 @@
 </main>
 <script type="module">
 import { marked } from '/vendor/marked.esm.js';
+import { protectMath } from '/mathmd.js';
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const PHASE = { plan: 'Splitting the question', research: 'Agents are researching', crosscheck: 'Agents are cross-checking each other', redteam: 'The red team is re-opening sources', fix: 'Fixing what the red team found', gate: 'Checking the evidence', write: 'Writing the answer', judge: 'An independent judge is reading it', done: 'Done' };
 let es = null, timer = null;
 
 function render(md, id) {
-  const html = marked.parse(md.replace(/~/g, '\\~').replace(/\[((?:C\d+-\d+)(?:\s*[,;]\s*C\d+-\d+)*)\]/g, (_, ids) => ids.split(/\s*[,;]\s*/).map((c) => `<a class="tag" href="/run/${id}#report" title="See the sources behind ${c}">${c}</a>`).join('')));
+  const math = protectMath(md);
+  const html0 = marked.parse(math.src.replace(/~/g, '\\~').replace(/\[((?:C\d+-\d+)(?:\s*[,;]\s*C\d+-\d+)*)\]/g, (_, ids) => ids.split(/\s*[,;]\s*/).map((c) => `<a class="tag" href="/run/${id}#report" title="See the sources behind ${c}">${c}</a>`).join('')));
+  const html = math.restore(html0);
   const doc = new DOMParser().parseFromString(html, 'text/html');
   doc.querySelectorAll('script,style,iframe,object,embed,form').forEach((n) => n.remove());
   doc.querySelectorAll('*').forEach((n) => [...n.attributes].forEach((a) => { if (/^on/i.test(a.name) || (/^(href|src)$/i.test(a.name) && /^\s*javascript:/i.test(a.value))) n.removeAttribute(a.name); }));

@@ -13,7 +13,8 @@ fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(path.join(OUT, "data"), { recursive: true });
 fs.cpSync(path.join(PUB, "vendor"), path.join(OUT, "vendor"), { recursive: true });
 fs.copyFileSync(path.join(PUB, "style.css"), path.join(OUT, "style.css"));
-fs.writeFileSync(path.join(OUT, "app.js"), fs.readFileSync(path.join(PUB, "app.js"), "utf8").replace("'/vendor/marked.esm.js'", `'${BASE}/vendor/marked.esm.js'`));
+// every script of the page, with its absolute imports moved under the base path
+for (const f of fs.readdirSync(PUB).filter((x) => x.endsWith(".js"))) fs.writeFileSync(path.join(OUT, f), fs.readFileSync(path.join(PUB, f), "utf8").replaceAll("from '/", `from '${BASE}/`));
 let html = fs.readFileSync(path.join(PUB, "index.html"), "utf8")
   .replaceAll('href="/vendor/', `href="${BASE}/vendor/`)
   .replace('href="/style.css"', `href="${BASE}/style.css"`)
