@@ -68,6 +68,7 @@ function startRun(body) {
     redteam: Math.max(1, Math.min(3, Number(body.redteam) || 2)),
     minutes: Math.max(5, Math.min(120, Number(body.minutes) || 30)),
     baseline: body.baseline !== false,
+    ...(body.review_rounds != null ? { review_rounds: Math.max(0, Math.min(4, Number(body.review_rounds) || 0)) } : {}),
     ...(body.multimodal ? { multimodal: true } : {}),
     ...(Array.isArray(body.models) && body.models.length <= 32 && body.models.every((m) => /^gemini-[a-z0-9.-]{1,40}$/.test(m)) ? { models: body.models } : {}),
     ...(Number(body.max_rounds) >= 1 ? { max_rounds: Math.min(4, Number(body.max_rounds)) } : {}),

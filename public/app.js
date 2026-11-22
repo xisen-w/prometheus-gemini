@@ -14,8 +14,8 @@ const app = $('#app');
 const drawer = $('#drawer');
 const scrim = $('#scrim');
 
-const PHASES = ['plan', 'research', 'crosscheck', 'redteam', 'fix', 'gate', 'write', 'judge', 'done'];
-const PHASE_LABEL = { plan: 'Plan', research: 'Research', crosscheck: 'Cross-check', redteam: 'Red team', fix: 'Fix', gate: 'Gate', write: 'Write', judge: 'Judge', done: 'Done' };
+const PHASES = ['plan', 'research', 'crosscheck', 'redteam', 'fix', 'gate', 'write', 'review', 'judge', 'done'];
+const PHASE_LABEL = { plan: 'Plan', research: 'Research', crosscheck: 'Cross-check', redteam: 'Red team', fix: 'Fix', gate: 'Gate', write: 'Write', review: 'Team review', judge: 'Judge', done: 'Done' };
 const PHASE_VERB = { plan: 'planning', research: 'researching', crosscheck: 'cross-checking', redteam: 'challenging', fix: 'fixing', gate: 'gating', write: 'writing', judge: 'judging' };
 const ROLE_LABEL = { planner: 'Planner', researcher: 'Researcher', redteam: 'Red team', judge: 'Judge', writer: 'Writer' };
 const R_HUES = [252, 192, 142, 305, 82, 222, 338, 112];
@@ -384,6 +384,10 @@ function handle(ev, animate) {
     case 'criteria':
       S.criteria = ev.items || [];
       roomAdd(simpleLine(ev, `<b>What the answer will be judged on</b><ol>${S.criteria.map((c) => `<li>${esc(c)}</li>`).join('')}</ol>`), animate);
+      break;
+    case 'review':
+      S.reviews = (S.reviews || []).concat(ev);
+      roomAdd(simpleLine(ev, `<b>Team review, round ${esc(ev.round)}</b> · <b class="${ev.approval >= 0.9 ? 'pass' : 'fail'}">${esc(ev.ok)} of ${esc(ev.voters)} would sign it (${Math.round(ev.approval * 100)}%)</b> <span class="faint">answers ${esc(ev.scores?.answers)}/5 · insight ${esc(ev.scores?.insight)}/5 · reads ${esc(ev.scores?.reads)}/5 · ${esc(ev.issues)} issues · ${esc(ev.missing)} findings reported missing</span>${(ev.sample || []).length ? `<ul>${ev.sample.map((i) => `<li><span class="faint">${esc(i.where)} · ${esc(i.kind)}</span> ${esc(i.problem)}</li>`).join('')}</ul>` : ''}`), animate);
       break;
     case 'vote':
       S.votes = { yes: ev.yes, of: ev.of };

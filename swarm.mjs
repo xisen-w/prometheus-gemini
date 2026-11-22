@@ -954,6 +954,8 @@ async function mockModel(input, system) {
   await sleep(500);
   if (system.includes("plan deep research")) return { text: JSON.stringify({ questions: [1, 2, 3, 4, 5, 6].map((i) => ({ id: `Q0-${i}`, text: `Mock sub-question ${i}`, parent: null })) }), id: "mock_p", searches: [], urls: [], tokens: 100 };
   if (system.includes("criteria a research report will be judged on")) return { text: '{"criteria":["Mock: a clear answer to the question, first.","Mock: two sources per key fact.","Mock: evidence against."]}', id: "mock_c", searches: [], urls: [], tokens: 100 };
+  if (system.includes("agents who researched this question. The team's draft report is written")) return { text: JSON.stringify({ vote: Math.random() < (input.includes("REVISED-ONCE") ? 0.97 : 0.6) ? "ok" : "revise", answers: 4, insight: 3, reads: 3, issues: [{ where: "opening", kind: "buried", problem: "mock issue", fix: "mock fix" }], missing: [], sharpen: "mock sharpen" }), id: "mock_rv", searches: [], urls: [], tokens: 50 };
+  if (system.includes("You are the lead editor")) return { text: "# Mock report\n\nREVISED-ONCE answer.\n", id: "mock_ed", searches: [], urls: [], tokens: 50 };
   if (system.includes("You are a reader with one minute")) return { text: '{"asks":[{"ask":"mock","answer":"mock","stated":true}]}', id: "mock_r", searches: [], urls: [], tokens: 50 };
   if (system.includes("You are the judge")) return { text: '{"checks":[{"criterion":1,"met":true,"evidence":"mock"},{"criterion":2,"met":true,"evidence":"mock"},{"criterion":3,"met":true,"evidence":"mock"}]}', id: "mock_j", searches: [], urls: [], tokens: 100 };
   const ids = [...new Set(input.match(/C\d+-\d+/g) || [])];
@@ -1164,6 +1166,7 @@ async function freeRun(run, R, X) {
     const g = await gate(run, 1); // not a blocker here: recorded to compare with the orchestrated mode
     let report = N > 24 ? (run.emit({ t: "phase", name: "write", round: 1 }), await writeOutlined(run)) : await write(run);
     if (report) report = await bottomLine(run, report);
+    if (report) report = await reviewLoop(run, report);
     if (report) report = await verifyReport(run, report);
     if (report) {
       const j = await judge(run, 1, report);
@@ -1191,6 +1194,7 @@ async function main() {
   if (from === "write") return resumeAtWrite(run);
   if (from === "baseline") { run.req.baseline = true; return baseline(run); }
   if (from === "verify") return verifyOnly(run);
+  if (from === "review") { loadState(run); await criteria(run); return void (await reviewLoop(run, fs.readFileSync(path.join(run.dir, "report.md"), "utf8"))); }
   if (from === "judge") { loadState(run); await criteria(run); return void (await judge(run, 9, fs.readFileSync(path.join(run.dir, process.env.JUDGE_REPORT || "report.md"), "utf8"))); }
   if (from === "bottomline") { loadState(run); const f = path.join(run.dir, "report.md"); return void (await bottomLine(run, fs.readFileSync(f, "utf8"))); }
   // team size: `agents` = researchers + red team (8..128); older requests give the two counts
@@ -1231,6 +1235,7 @@ async function main() {
     }
     let report = await write(run);
     if (report) report = await bottomLine(run, report);
+    if (report) report = await reviewLoop(run, report);
     if (report) report = await verifyReport(run, report);
     for (let attempt = 1; report && attempt <= 2; attempt++) {
       const j = await judge(run, attempt, report);
@@ -1295,6 +1300,125 @@ The verdict answers what the person asked, in the form they asked it: read the q
   } catch (e) {
     return report;
   }
+}
+
+// ---------------------------------------------------------------- the team reads its own draft
+// Writing can go wrong too. After the draft exists, every agent reads it the way the person who asked would:
+// the opening, one section closely, and its own findings beside it. Each says whether it would sign the draft,
+// scores it, and names what to change. Editors revise; the team reads again. The draft passes when APPROVAL of
+// the readers would sign it, or after the last round.
+const APPROVAL = Number(process.env.SWARM_APPROVAL || 0.9);
+const GENERATED = /^## (What did not pass the evidence gate)/;
+
+function splitReport(report) {
+  const idx = [...report.matchAll(/^## .*$/gm)].map((m) => m.index);
+  if (!idx.length) return { opening: report, sections: [] };
+  return { opening: report.slice(0, idx[0]), sections: idx.map((at, i) => report.slice(at, idx[i + 1] ?? report.length)) };
+}
+const headingOf = (sec) => (sec.match(/^## (.*)$/m) || ["", ""])[1].trim();
+
+async function plainJson(model, system, input) {
+  const res = await modelCall(input, system, model);
+  return { res, json: JSON.parse((res.text.match(/\{[\s\S]*\}/) || ["null"])[0]) };
+}
+
+async function reviewRound(run, report, round) {
+  const { opening, sections } = splitReport(report);
+  const readers = run.seats.filter((x) => x.role === "researcher" || x.role === "redteam");
+  const v = run.view();
+  const editable = sections.map((sec, i) => i).filter((i) => !GENERATED.test(sections[i]));
+  const branchIds = (run.branches || []).map((b) => b.id);
+  const sys = (seat) => `You are ${seat.id}, one of the ${readers.length} agents who researched this question. The team's draft report is written. Read it the way the person who asked would: they are busy, they already know the basic facts, and they want judgement and insight, not a pile of information. Then judge it honestly; a draft that only collects facts is not good enough, and neither is one that is hard to read. You get the opening that everyone reads, one section to read closely, and the findings you logged yourself.
+Return ONLY JSON:
+{"vote":"ok" | "revise",   // ok only if you would put your name on it exactly as it stands
+ "answers":1-5,   // does the opening answer what was asked, where the reader looks first
+ "insight":1-5,   // does it tell the reader something they could not get by reading the sources themselves: a judgement, a ranking with reasons, a cause, a comparison, a warning
+ "reads":1-5,     // length, order, tone: a memo a person wants to read, or an audit log
+ "issues":[{"where":"opening" | "<the section's heading>","kind":"wrong | inconsistent | missing | buried | padding | unclear | no judgement","problem":"specific; quote up to 12 words of the draft when you can","fix":"what to write instead, or what to cut"}],   // at most 5, the ones that matter most; an inconsistency between the opening and your section is the most important kind
+ "missing":["ids of YOUR OWN findings that matter for the answer and are absent or misstated in what you read"],
+ "sharpen":"the one thing this report should say more sharply, written as a sentence the report could use"}
+Write problem, fix and sharpen in the language of the question.`;
+  const reviews = await Promise.all(readers.map(async (seat, k) => {
+    // a researcher reads its own branch's section when sections follow the branches; everyone else is spread evenly
+    let si = editable.length ? editable[k % editable.length] : -1;
+    const bi = branchIds.indexOf(seat.branch);
+    if (seat.role === "researcher" && bi >= 0 && bi < sections.length && branchIds.length > 1 && !GENERATED.test(sections[bi])) si = bi;
+    const mine = [...v.claims.values()].filter((c) => c.by === seat.id && v.kept(c)).slice(0, 30).map((c) => `[${c.id}]${c.key ? " key" : ""} ${c.text.slice(0, 220)}`).join("\n");
+    try {
+      const { res, json } = await plainJson(seat.model || SEAT_MODEL, sys(seat), `QUESTION: ${run.req.question}\n${criteriaText(run) ? `WHAT THE ANSWER IS JUDGED ON:\n${criteriaText(run)}\n` : ""}\nOPENING OF THE DRAFT:\n${fit(opening, 30000)}\n\nSECTION YOU READ CLOSELY:\n${si >= 0 ? fit(sections[si], 60000) : "(the report has no sections)"}\n\nSECTION HEADINGS OF THE WHOLE DRAFT: ${sections.map(headingOf).join(" | ")}\n\nYOUR OWN FINDINGS:\n${mine || "(none logged)"}`);
+      run.totals.tokens += res.tokens;
+      if (!json || !["ok", "revise"].includes(json.vote)) return null;
+      return { seat: seat.id, section: si, ...json };
+    } catch { return null; }
+  }));
+  const got = reviews.filter(Boolean);
+  const ok = got.filter((r) => r.vote === "ok").length;
+  const avg = (k) => +(got.reduce((a, r) => a + (Number(r[k]) || 0), 0) / Math.max(1, got.length)).toFixed(2);
+  const issues = got.flatMap((r) => (r.issues || []).filter((i) => i && i.problem).map((i) => ({ ...i, seat: r.seat, section: r.section, vote: r.vote })));
+  const kinds = {};
+  for (const i of issues) kinds[String(i.kind || "other").trim()] = (kinds[String(i.kind || "other").trim()] || 0) + 1;
+  const missing = new Map();
+  for (const r of got) for (const id of r.missing || []) if (v.claims.has(id)) missing.set(id, (missing.get(id) || 0) + 1);
+  const summary = { round, voters: got.length, ok, approval: got.length ? +(ok / got.length).toFixed(3) : 0, scores: { answers: avg("answers"), insight: avg("insight"), reads: avg("reads") }, issues: issues.length, kinds, missing: missing.size, sample: issues.filter((i) => i.vote === "revise").slice(0, 6).map((i) => ({ where: i.where, kind: i.kind, problem: String(i.problem).slice(0, 200) })) };
+  run.emit({ t: "review", ...summary });
+  run.say("system", `Review round ${round}: ${ok} of ${got.length} readers would sign the draft (${Math.round(summary.approval * 100)}%). Answers ${summary.scores.answers}/5, insight ${summary.scores.insight}/5, reads ${summary.scores.reads}/5. ${issues.length} issues raised; ${missing.size} findings reported missing or misstated.`);
+  fs.writeFileSync(path.join(run.dir, `review.${round}.json`), JSON.stringify({ summary, reviews: got }, null, 1));
+  return { got, issues, missing, summary, opening, sections };
+}
+
+async function revise(run, report, rv, round) {
+  const { issues, missing, opening, sections, got } = rv;
+  const v = run.view();
+  const uniq = (list) => { const seen = new Set(); return list.filter((i) => { const k = String(i.problem).toLowerCase().slice(0, 70); if (seen.has(k)) return false; seen.add(k); return true; }); };
+  const isOpening = (i) => /^opening$/i.test(String(i.where || "").trim());
+  const forSection = (si) => uniq(issues.filter((i) => !isOpening(i) && (i.section === si || headingOf(sections[si]).startsWith(String(i.where || "").trim().slice(0, 24))))).sort((a, b) => (a.vote === "revise" ? 0 : 1) - (b.vote === "revise" ? 0 : 1)).slice(0, 30);
+  const sharpen = uniq(got.filter((r) => r.sharpen).map((r) => ({ problem: r.sharpen, seat: r.seat }))).slice(0, 30);
+  const missList = [...missing].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([id]) => id);
+  const say = (i) => `- [${i.kind || "issue"}] ${i.problem}${i.fix ? ` -> ${i.fix}` : ""} (${i.seat})`;
+  // sections with issues are edited in parallel, each against its own evidence
+  const newSections = await Promise.all(sections.map(async (sec, si) => {
+    const list = forSection(si);
+    if (GENERATED.test(sec) || !list.length) return sec;
+    const ids = tagsIn(sec);
+    const miss = missList.filter((id) => v.claims.get(id) && (run.seats.find((x) => x.id === v.claims.get(id).by)?.branch === (run.branches || [])[si]?.id || !ids.length)).slice(0, 12);
+    try {
+      const res = await modelCall(`QUESTION: ${run.req.question}\n\nSECTION:\n${fit(sec, 200000)}\n\nWHAT THE READERS SAID ABOUT IT:\n${list.map(say).join("\n")}\n${miss.length ? `\nFINDINGS THEIR AUTHORS SAY ARE MISSING OR MISSTATED HERE:\n${claimDigest(run, miss)}\n` : ""}`, `You are the editor of one section of a research report. Its readers, who researched the question themselves, have said what is wrong with it. Revise it: fix what is wrong or inconsistent, bring in the missing findings (only from the evidence given), move what was buried to where it is seen, state the judgement the readers asked for and give its reasons, and cut what they called padding. Do not make it longer except to add a missing finding. Keep every claim tag, link and contact channel that still belongs. Add no fact that is not in the section or the evidence given. Write in the language of the question. Output only the revised section, starting with its "## " heading.`);
+      run.totals.tokens += res.tokens;
+      const out = res.text.trim().replace(/^```\w*\n?|```$/g, "").trim();
+      return out.startsWith("## ") && out.length > 200 ? out + "\n\n" : sec;
+    } catch { return sec; }
+  }));
+  // the opening is rewritten last, against the revised sections, so the two cannot disagree
+  let newOpening = opening;
+  const openIssues = uniq(issues.filter(isOpening)).sort((a, b) => (a.vote === "revise" ? 0 : 1) - (b.vote === "revise" ? 0 : 1)).slice(0, 45);
+  try {
+    const res = await modelCall(`QUESTION: ${run.req.question}\n${criteriaText(run) ? `WHAT THE ANSWER IS JUDGED ON:\n${criteriaText(run)}\n` : ""}\nCURRENT OPENING:\n${fit(opening, 40000)}\n\nREADERS: ${rv.summary.ok} of ${rv.summary.voters} would sign; answers ${rv.summary.scores.answers}/5, insight ${rv.summary.scores.insight}/5, reads ${rv.summary.scores.reads}/5.\n\nWHAT THEY SAID ABOUT THE OPENING:\n${openIssues.map(say).join("\n") || "(nothing specific)"}\n\nWHAT THEY WANT SAID MORE SHARPLY:\n${sharpen.map((x) => `- ${x.problem} (${x.seat})`).join("\n") || "(nothing)"}\n\nFINDINGS REPORTED MISSING OR MISSTATED:\n${claimDigest(run, missList.slice(0, 20)) || "(none)"}\n\nTHE SECTIONS AS REVISED (heading and first lines of each; the opening must agree with them: same names, same counts, same ranking):\n${newSections.map((x) => fit(x, 1800)).join("\n")}`, `You are the lead editor. Rewrite the opening of the report: everything above the first section. The readers researched this question themselves and have told you what is wrong. The opening is what the person who asked reads first and often all they read: it answers what they asked, then gives the judgement and the few points that carry it, in the order a busy reader needs. It is short. It names its picks or its number plainly, and it must agree with the sections (a shortlist contains only names the sections support; counts match). Keep claim tags in square brackets on the statements they support, keep links. Add nothing that is not in the current opening, the sections or the findings given. Write in the language of the question. Output only the new opening, starting with the "# " title line.`);
+    run.totals.tokens += res.tokens;
+    const out = res.text.trim().replace(/^```\w*\n?|```$/g, "").trim();
+    if (out.startsWith("# ") && out.length > 150) newOpening = out + "\n\n";
+  } catch {}
+  const next = newOpening + newSections.join("");
+  fs.writeFileSync(path.join(run.dir, `report.round${round}.md`), report);
+  fs.writeFileSync(path.join(run.dir, "report.md"), next);
+  run.emit({ t: "report" });
+  return next;
+}
+
+async function reviewLoop(run, report) {
+  const rounds = Math.max(0, Math.min(4, run.req.review_rounds ?? 3));
+  if (!rounds) return report;
+  run.emit({ t: "phase", name: "review", round: 1 });
+  for (let round = 1; round <= rounds; round++) {
+    run.emit({ t: "turn", seat: "W", phase: "review", status: "started" });
+    const t0 = Date.now();
+    const rv = await reviewRound(run, report, round);
+    const passed = rv.summary.voters > 0 && rv.summary.approval >= APPROVAL;
+    if (!passed && round < rounds) report = await revise(run, report, rv, round);
+    run.emit({ t: "turn", seat: "W", phase: "review", status: "completed", searches: [], urls: [], tokens: 0, ms: Date.now() - t0, error: null });
+    if (passed) { run.say("system", `The draft is accepted: ${Math.round(rv.summary.approval * 100)}% of its readers would sign it.`); run.reviewed = { passed: true, ...rv.summary }; return report; }
+    if (round === rounds) { run.say("system", `The draft goes forward without the team's full agreement: ${Math.round(rv.summary.approval * 100)}% would sign it after ${rounds} rounds (${Math.round(APPROVAL * 100)}% needed).`); run.reviewed = { passed: false, ...rv.summary }; }
+  }
+  return report;
 }
 
 // ---------------------------------------------------------------- citation check after writing
