@@ -815,8 +815,27 @@ function evidenceCounts(run) {
   };
 }
 
+// What would a person who reads only the opening take away? A separate reader gets the question and the first
+// lines of the report, nothing else, and must say the report's answer to each thing the question asks. An ask
+// the reader cannot answer from the opening was not answered where people look, whatever the rest says.
+function opening(report) {
+  const body = report.replace(/^#[^\n]*\n+/, "");
+  const cjk = (body.slice(0, 400).match(/[\u3040-\u30ff\u3400-\u9fff]/g) || []).length > 80;
+  return body.slice(0, cjk ? 350 : 700);
+}
+async function readerTest(run, report) {
+  const sys = `You are a reader with one minute. You get a question someone asked and only the opening lines of the report written to answer it. List each separate thing the question asks, and sort each into kind "answer" (it has an answer one can state in a line: what happened, what is the status, will it, how many, which, when) or kind "material" (a request for material that needs space: lay out a timeline, list the evidence, give a table). For each ask of kind "answer", say what the opening tells you the answer is, in a few words; if the opening does not let you state it, stated is false: do not guess, and do not count background that leads up to an answer. For kind "material" leave answer empty and stated true. Return ONLY JSON {"asks":[{"ask":"...","kind":"answer","answer":"...","stated":true}]}.`;
+  try {
+    const res = await modelCall(`QUESTION: ${run.req.question}\n\nOPENING OF THE REPORT (this is all you have read):\n${opening(report)}`, sys);
+    run.totals.tokens += res.tokens;
+    return (JSON.parse((res.text.match(/\{[\s\S]*\}/) || ["{}"])[0]).asks || []).filter((a) => a && a.ask);
+  } catch { return null; }
+}
+
 async function judge(run, attempt, report) {
   run.emit({ t: "phase", name: "judge", round: attempt });
+  const reader = await readerTest(run, report);
+  const unstated = (reader || []).filter((a) => a.kind !== "material" && a.stated !== true);
   const v = run.view();
   const tags = tagsIn(report);
   const bad = tags.filter((t) => !v.claims.has(t) || !v.kept(v.claims.get(t)));
@@ -825,21 +844,24 @@ async function judge(run, attempt, report) {
 For every criterion, in order:
 - met: true only when the report itself clearly satisfies the criterion as written. A promise, a placeholder, or an answer the reader has to dig out of a long passage does not satisfy a criterion that asks for a clear answer: the answer must be stated where the reader finds it first.
 - For a criterion that sets a number (sources, publishers, evidence on each side), count from the EVIDENCE COUNTS and the ledger, not from what the report says about itself.
+- A criterion that asks for a clear or direct answer is met only when the READER TEST shows every ask stated: an ask the reader could not answer from the opening was not answered where people look, however well the rest of the report covers it.
 - A key fact the report states must follow from the quoted passage of a source attached to the claim it cites; when the quotes do not say it, the criterion it serves is not met.
 - evidence: one or two sentences on where the report meets it, or what you found instead. missing: what exactly is missing, empty when met.
 Judge only against the question and its criteria; do not add requirements of your own. When you cannot tell whether a criterion is met, it is not met. Return ONLY JSON {"checks":[{"criterion":1,"met":true,"evidence":"...","missing":""}]}.`;
   let pass = false, notes = "", checks = [];
   try {
-    const res = await modelCall(`QUESTION: ${run.req.question}\nToday: ${today()}\n\nCRITERIA:\n${list.map((c, i) => `${i + 1}. ${c}`).join("\n")}\n\nEVIDENCE COUNTS: ${JSON.stringify(evidenceCounts(run))}\nClaim ids cited in the report that are not in the ledger: ${bad.join(", ") || "none"}.\n\nREPORT:\n${fit(report, 1_600_000)}\n\nLEDGER:\n${fit(ledgerDigest(run, { compact: run.seats.length > 24 }), 1_200_000)}`, sys);
+    const res = await modelCall(`QUESTION: ${run.req.question}\nToday: ${today()}\n\nCRITERIA:\n${list.map((c, i) => `${i + 1}. ${c}`).join("\n")}\n\nEVIDENCE COUNTS: ${JSON.stringify(evidenceCounts(run))}\nREADER TEST (a separate reader saw only the question and the report's opening lines; for each thing the question asks, what the opening told them): ${reader ? JSON.stringify(reader) : "not run"}\nClaim ids cited in the report that are not in the ledger: ${bad.join(", ") || "none"}.\n\nREPORT:\n${fit(report, 1_600_000)}\n\nLEDGER:\n${fit(ledgerDigest(run, { compact: run.seats.length > 24 }), 1_200_000)}`, sys);
     run.totals.tokens += res.tokens;
     const j = JSON.parse((res.text.match(/\{[\s\S]*\}/) || ["{}"])[0]);
     checks = list.map((c, i) => { const k = (j.checks || []).find((x) => Number(x.criterion) === i + 1) || {}; return { criterion: c, met: k.met === true, evidence: String(k.evidence || ""), missing: String(k.missing || (k.met === true ? "" : "the judge gave no answer for this criterion")) }; });
+    // the reader test is not left to the judge's goodwill: an unstated ask fails the first criterion
+    if (unstated.length && checks[0]) { checks[0].met = false; checks[0].missing = `A reader of the opening alone could not say the report's answer to: ${unstated.map((a) => a.ask).join("; ")}. State those answers in the first lines.`; }
     pass = checks.every((k) => k.met) && bad.length === 0;
     notes = [...(bad.length ? [`report cites ids not in the ledger: ${bad.join(", ")}`] : []), ...checks.filter((k) => !k.met).map((k) => `NOT MET: ${k.criterion}\n  missing: ${k.missing}`)].join("\n");
   } catch (e) {
     notes = `judge error: ${String(e.message).slice(0, 200)}`;
   }
-  run.emit({ t: "judge", attempt, pass, notes, checks });
+  run.emit({ t: "judge", attempt, pass, notes, checks, reader });
   run.say("J", pass ? `Passed: all ${checks.length} criteria met.` : `Not yet:\n${notes}`);
   return { pass, notes };
 }
@@ -904,6 +926,7 @@ async function mockModel(input, system) {
   await sleep(500);
   if (system.includes("plan deep research")) return { text: JSON.stringify({ questions: [1, 2, 3, 4, 5, 6].map((i) => ({ id: `Q0-${i}`, text: `Mock sub-question ${i}`, parent: null })) }), id: "mock_p", searches: [], urls: [], tokens: 100 };
   if (system.includes("criteria a research report will be judged on")) return { text: '{"criteria":["Mock: a clear answer to the question, first.","Mock: two sources per key fact.","Mock: evidence against."]}', id: "mock_c", searches: [], urls: [], tokens: 100 };
+  if (system.includes("You are a reader with one minute")) return { text: '{"asks":[{"ask":"mock","answer":"mock","stated":true}]}', id: "mock_r", searches: [], urls: [], tokens: 50 };
   if (system.includes("You are the judge")) return { text: '{"checks":[{"criterion":1,"met":true,"evidence":"mock"},{"criterion":2,"met":true,"evidence":"mock"},{"criterion":3,"met":true,"evidence":"mock"}]}', id: "mock_j", searches: [], urls: [], tokens: 100 };
   const ids = [...new Set(input.match(/C\d+-\d+/g) || [])];
   return { text: `# Mock report\n\nAnswer. ${ids.map((i) => `[${i}]`).join(" ")}\n\n## Confidence\nMedium.`, id: "mock_w", searches: [], urls: [], tokens: 100 };
