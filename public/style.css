@@ -462,3 +462,28 @@ label.attach input[type=file] { margin-top: 8px; font: 13px var(--sans); color: 
   .toc ol { columns: 1; }
   .act { padding: 6px 11px; font-size: 12.5px; }
 }
+
+/* topology: who addressed whom */
+.topo-lede { font: 400 18px/1.5 var(--serif); max-width: 44em; margin: 0 0 18px; }
+.topo-filter { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.topo-filter button { font: 13px/1 var(--sans); color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; }
+.topo-filter button:hover { color: var(--fg); border-color: var(--line-strong); }
+.topo-filter button[aria-pressed=true] { color: var(--fg); border-color: var(--fg); }
+.topo-filter i { width: 14px; height: 2px; border-radius: 1px; display: inline-block; }
+.topo-filter span { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+.topo-filter .k1, .topo-table .k1 { background: var(--series-1); } .topo-filter .k2 { background: var(--series-2); } .topo-filter .k3 { background: var(--series-3); } .topo-filter .k4 { background: var(--series-4); }
+.topo-stage { position: relative; max-width: 760px; margin: 0 auto; }
+.topo-stage canvas { display: block; margin: 0 auto; }
+.topo-tip { position: absolute; z-index: 2; width: 220px; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 8px; font: 12.5px/1.45 var(--sans); color: var(--muted); pointer-events: none; box-shadow: 0 6px 20px rgba(0,0,0,.08); }
+.topo-tip[hidden] { display: none; }
+.topo-tip b { color: var(--fg); font-weight: 600; } .topo-tip em { display: block; font-style: normal; color: var(--fg); margin: 2px 0 4px; } .topo-tip .k { color: var(--faint); font-size: 12px; }
+.topo-key { display: flex; flex-wrap: wrap; gap: 6px 18px; justify-content: center; font: 12.5px/1.4 var(--sans); color: var(--muted); margin: 6px 0 22px; }
+.topo-key span { display: inline-flex; align-items: center; gap: 6px; }
+.topo-key i { width: 9px; height: 9px; display: inline-block; }
+.topo-key .dot { border-radius: 50%; background: var(--fg); } .topo-key .ring { border-radius: 50%; border: 1.5px solid var(--fg); box-sizing: border-box; } .topo-key .sq { background: var(--fg); }
+.topo-table { max-width: 44em; font-size: 14px; }
+.topo-table summary { cursor: pointer; color: var(--fg); font-weight: 500; }
+.topo-table table { border-collapse: collapse; margin-top: 10px; font: 13.5px/1.4 var(--sans); width: 100%; }
+.topo-table th, .topo-table td { text-align: left; padding: 6px 16px 6px 0; border-bottom: 1px solid var(--line); }
+.topo-table th { font-weight: 500; color: var(--muted); font-size: 12.5px; }
+.topo-table td:nth-child(n+4), .topo-table th:nth-child(n+4) { text-align: right; font-variant-numeric: tabular-nums; }

@@ -2,6 +2,7 @@ import { marked } from '/vendor/marked.esm.js';
 import { placeFigures } from '/figures.js';
 import { protectMath } from '/mathmd.js';
 import { follow } from '/stream.js';
+import { renderTopology } from '/topology.js';
 
 // a published copy sets window.GP = { base: '/gprometheus', static: true }: finished runs served as files, no server
 const BASE = window.GP?.base || '';
@@ -104,7 +105,7 @@ function freshState(id) {
     answers: new Map(), checks: new Map(), resolutions: new Map(), notFound: new Map(), rejected: [],
     turns: [], openTurns: new Map(), gates: [], judges: [], baseline: null, baselineStart: null,
     reports: 0, reportHtml: null, baselineMd: null, baselineHtml: null,
-    tab: null, tabChosen: false, dirty: new Set(), drawerClaim: null, evFilter: 'all',
+    tab: null, tabChosen: false, dirty: new Set(), drawerClaim: null, evFilter: 'all', said: new Map(),
   };
 }
 
@@ -288,6 +289,7 @@ const TABS = [
   ['room', 'Room', 'Room'],
   ['evidence', 'Evidence', 'Evidence'],
   ['questions', 'Questions', 'Questions'],
+  ['topology', 'Topology', 'Topology'],
   ['compare', 'vs Google Deep Research', 'vs Google'],
 ];
 const TALLY = [
@@ -324,6 +326,7 @@ function openRun(id) {
     <div class="pane" data-pane="room" hidden><ol class="room" id="room"></ol><button class="latest btn-quiet" id="latest" type="button" hidden>Latest</button></div>
     <div class="pane" data-pane="evidence" hidden></div>
     <div class="pane" data-pane="questions" hidden></div>
+    <div class="pane" data-pane="topology" hidden></div>
     <div class="pane" data-pane="compare" hidden></div>
   </section>`;
   $$('.tabs button').forEach((b) => b.addEventListener('click', () => { S.tabChosen = true; setTab(b.dataset.tab, true); }));
@@ -353,7 +356,9 @@ function setQuestion(text) {
   const n = [...String(text)].reduce((a, ch) => a + (/[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/.test(ch) ? 2 : 1), 0);
   q.classList.toggle('mid', n > 110 && n <= 260);
   q.classList.toggle('long', n > 260);
-  $('#qmore').hidden = n <= 260;
+  // the toggle is offered only when the fold actually hides something
+  $('#qmore').hidden = true;
+  if (n > 260) requestAnimationFrame(() => { $('#qmore').hidden = q.scrollHeight <= q.clientHeight + 2; });
 }
 
 async function exportPdf(e) {
@@ -497,7 +502,14 @@ function handle(ev, animate) {
       S.phaseSeen.set(ev.name, Math.max(S.phaseSeen.get(ev.name) || 0, ev.round || 1));
       roomAdd(phaseLine(ev), animate);
       break;
-    case 'msg': roomAdd(msgLine(ev), animate); break;
+    case 'msg':
+      // an @-name in a Room message is one agent addressing another (the Topology tab)
+      for (const m of new Set(String(ev.text || '').match(/@[A-Z]+\d*/g) || [])) {
+        const to = m.slice(1);
+        if (S.seats.has(to) && to !== ev.seat) { const k = `message|${ev.seat}|${to}`; S.said.set(k, (S.said.get(k) || 0) + 1); }
+      }
+      if (S.tab === 'topology') S.dirty.add('topology');
+      roomAdd(msgLine(ev), animate); break;
     case 'turn': turnLine(ev, animate); if (ev.status !== 'started') { S.turns.push(ev); } break;
     case 'ledger':
       for (const r of ev.rows || []) ingestRow(r, ev.seat, ev.at);
@@ -794,10 +806,26 @@ function renderPane(k, force) {
   if (k === 'report') renderReport(el);
   else if (k === 'evidence') renderEvidence(el);
   else if (k === 'questions') renderQuestions(el);
+  else if (k === 'topology') renderTopo(el);
   else if (k === 'compare') renderCompare(el);
   refreshChips();
 }
 const markDirty = (k) => { if (S.tab === k) renderPane(k, true); else S.dirty.add(k); };
+
+// Topology: who addressed whom, from the Room's @-names and the ledger's checks, challenges and answers
+function renderTopo(el) {
+  const edges = new Map(S.said);
+  const add = (kind, a, b) => { if (a && b && a !== b) { const k = `${kind}|${a}|${b}`; edges.set(k, (edges.get(k) || 0) + 1); } };
+  for (const c of S.checks.values()) add('check', c.by, S.sources.get(c.source)?.by);
+  for (const c of S.challenges.values()) add('challenge', c.by, S.claims.get(c.claim)?.by);
+  for (const r of S.resolutions.values()) add('answer', r.by, S.challenges.get(r.challenge)?.by);
+  const branchTitle = new Map();
+  for (const q of S.questions.values()) if (/^B\d+$/.test(q.id || '')) branchTitle.set(q.id, String(q.text || '').split(': ')[0].slice(0, 90));
+  const sig = `${edges.size}|${S.seats.size}|${S.done ? 1 : 0}`;
+  if (el.dataset.v === sig && el.querySelector('canvas')) return;
+  el.dataset.v = sig;
+  renderTopology(el, { seats: [...S.seats.values()], edges, branchTitle });
+}
 
 // Report
 const TAG_RE = /\[((?:C\d+-\d+)(?:\s*[,;]\s*C\d+-\d+)*)\]/g;
@@ -822,6 +850,7 @@ async function loadReport(quiet) {
     if (!r.ok) throw new Error(r.status);
     const md = await r.text();
     S.reportHtml = mdToHtml(md, true);
+    { const pdf = $('#actpdf'); if (pdf && !STATIC) pdf.hidden = false; }
     if (!S.reports) S.reports = 1;
     if (quiet && !S.tabChosen) setTab('report');
     markDirty('report'); markDirty('compare');

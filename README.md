@@ -82,3 +82,10 @@ server through the tunnel, under a path of the site's choosing:
   with headless Chrome when `CHROME_BIN` and `puppeteer-core` are available (`PUPPETEER_CORE` names its folder
   when it is not installed here); `?evidence=1` appends the full list of cited claims and their sources. Without
   Chrome the button opens the print page and the browser's own print dialog.
+
+## Who contacted whom
+
+The Topology tab of a run draws its agents on a ring, grouped by branch, and joins two agents when one addressed
+the other: a Room message naming the other agent, a re-opened source, a challenge to a claim, or an answer to a
+challenge. Hover an agent to see only its contacts. An orchestrated run shows a planner in the middle and one
+cluster per branch; a run without an orchestrator shows the red team reaching across the whole ring.
