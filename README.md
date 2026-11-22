@@ -70,3 +70,15 @@ server through the tunnel, under a path of the site's choosing:
   `SWARM_FORWARD_MAX_AGENTS` agents (128 by default): the site's code only opens the pages.
 - A page opened through a tunnel follows a run by asking for new events request by request
   (`/api/runs/<id>/events?from=<byte>`), because a tunnel holds a slow event stream back.
+
+## Share one run, and export its report
+
+- **Share.** The Share button on a run makes a link, `/s/<token>`, that opens that run and nothing else: no list
+  of runs, no form, no other run's files, no attached files. The token is the whole permission (it is kept in
+  the run's folder as `share.json`); "Stop sharing" removes it and the link stops opening anything. Set
+  `SWARM_PUBLIC_BASE` to the address other people reach the server at, so the link shown is one they can open.
+- **Export PDF.** `/run/<id>/print` is the report as a document: title, the question, the run's numbers, the
+  report, and every claim tag as a link to its first source. `GET /api/runs/<id>/report.pdf` prints that page
+  with headless Chrome when `CHROME_BIN` and `puppeteer-core` are available (`PUPPETEER_CORE` names its folder
+  when it is not installed here); `?evidence=1` appends the full list of cited claims and their sources. Without
+  Chrome the button opens the print page and the browser's own print dialog.

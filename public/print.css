@@ -1,0 +1,57 @@
+/* The report as a document: one column, set for paper. The same page is what the PDF export prints. */
+body.doc { background: #fff; color: #1c1c1a; color-scheme: light; --serif: "Newsreader", "Noto Serif SC", "Songti SC", "Noto Serif CJK SC", Georgia, serif; --sans: "Inter", "Noto Sans SC", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif; --mono: "JetBrains Mono", "Noto Sans SC", ui-monospace, Menlo, monospace; --fg: #1c1c1a; --muted: #5f5e58; --faint: #8a8882; --line: #dedcd4; --chip: #f1f0ea; --bg: #fff; }
+#doc { max-width: 174mm; margin: 0 auto; padding: 14mm 16px 20mm; font: 400 10.6pt/1.56 var(--serif); }
+.wait { font: 13px var(--sans); color: var(--faint); }
+.d-kicker { font: 500 7.6pt/1 var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--faint); margin: 0 0 9mm; display: flex; justify-content: space-between; gap: 12px; }
+.d-title { font: 400 23pt/1.14 var(--serif); letter-spacing: -0.015em; margin: 0 0 6mm; text-wrap: balance; }
+.d-ask { margin: 0 0 5mm; padding: 0 0 0 4mm; border-left: 1.5pt solid var(--line); color: var(--muted); font: 400 9.4pt/1.5 var(--serif); }
+.d-ask b { display: block; font: 500 7.2pt/1 var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--faint); margin-bottom: 1.6mm; }
+.d-facts { font: 8.2pt/1.5 var(--sans); color: var(--muted); margin: 0 0 9mm; padding: 2.6mm 0; border-top: .5pt solid var(--line); border-bottom: .5pt solid var(--line); display: flex; flex-wrap: wrap; gap: 0 5mm; }
+.d-facts b { font-weight: 500; color: var(--fg); font-variant-numeric: tabular-nums; }
+
+body.doc .prose { font: inherit; max-width: none; }
+body.doc .prose > * { max-width: none; }
+body.doc .prose h2 { font: 500 14.5pt/1.25 var(--serif); margin: 9mm 0 2.6mm; break-after: avoid; }
+body.doc .prose h3 { font: 500 11.8pt/1.3 var(--serif); margin: 6mm 0 1.8mm; break-after: avoid; }
+body.doc .prose h4 { font: 600 10.4pt/1.3 var(--serif); margin: 4.5mm 0 1.4mm; break-after: avoid; }
+body.doc .prose p, body.doc .prose ul, body.doc .prose ol { margin: 0 0 3.2mm; orphans: 3; widows: 3; }
+body.doc .prose li { margin: .8mm 0; }
+body.doc .prose a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px; }
+body.doc .prose code { font-size: .8em; background: var(--chip); }
+body.doc .prose pre { font: 8pt/1.45 var(--mono); background: var(--chip); padding: 3mm; border-radius: 3px; white-space: pre-wrap; overflow-wrap: anywhere; break-inside: avoid; }
+body.doc .prose pre code { background: none; padding: 0; font-size: inherit; }
+body.doc .prose table { display: table; width: 100%; table-layout: auto; font: 8pt/1.38 var(--sans); margin: 2mm 0 5mm; overflow: visible; }
+body.doc .prose th, body.doc .prose td { padding: 1.5mm 2.4mm 1.5mm 0; overflow-wrap: anywhere; }
+body.doc .prose th { font-size: 7.4pt; border-bottom: .8pt solid var(--fg); }
+body.doc .prose tr { break-inside: avoid; }
+body.doc .prose thead { display: table-header-group; }
+body.doc .prose blockquote { margin: 0 0 3.2mm; }
+body.doc .prose hr { margin: 6mm 0; }
+body.doc figure.fig { break-inside: avoid; margin: 4mm 0 6mm; }
+body.doc .fig-data { display: none; }
+body.doc .katex-display { break-inside: avoid; overflow: visible; }
+
+/* a claim tag: small, quiet, and a link to its line in the evidence list */
+body.doc .cite { all: unset; font: 500 6.3pt/1 var(--mono); color: var(--faint); vertical-align: .42em; margin: 0 0 0 1.5px; white-space: nowrap; cursor: pointer; }
+body.doc .cite + .cite::before { content: "·"; margin-right: 1.5px; }
+
+.d-end { margin: 10mm 0 0; padding-top: 4mm; border-top: .5pt solid var(--line); font: 8.2pt/1.5 var(--sans); color: var(--faint); max-width: 120mm; }
+.d-ev { margin-top: 12mm; padding-top: 5mm; border-top: .8pt solid var(--fg); break-before: page; }
+.d-ev h2 { font: 500 14.5pt/1.25 var(--serif); margin: 0 0 1.6mm; }
+.d-ev .lede { font: 8.4pt/1.5 var(--sans); color: var(--muted); margin: 0 0 5mm; }
+.d-ev ol { list-style: none; margin: 0; padding: 0; font: 7pt/1.42 var(--sans); columns: 2; column-gap: 7mm; }
+.d-ev li { display: grid; grid-template-columns: 11mm minmax(0, 1fr); gap: 0 2mm; padding: 1.5mm 0; border-bottom: .4pt solid var(--line); break-inside: avoid; }
+.d-ev .cid { font: 500 6.8pt/1.7 var(--mono); color: var(--muted); }
+.d-ev .ct { color: var(--fg); }
+.d-ev .cs { display: block; color: var(--faint); margin-top: .6mm; overflow-wrap: anywhere; }
+.d-ev .cs a { color: inherit; text-decoration: none; }
+.d-ev .flag { color: #a8610f; }
+
+@media print {
+  #doc { max-width: none; padding: 0; }
+  html, body.doc { background: #fff; }
+}
+@media screen {
+  body.doc { background: #eceae4; }
+  #doc { background: #fff; margin: 24px auto; padding: 18mm 18mm 22mm; max-width: 174mm; box-shadow: 0 1px 12px rgba(0,0,0,.08); }
+}

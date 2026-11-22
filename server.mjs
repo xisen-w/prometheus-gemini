@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 
 const ROOT = path.dirname(new URL(import.meta.url).pathname);
 const RUNS = path.join(ROOT, "runs");
@@ -20,12 +21,22 @@ function send(res, code, body, type = "application/json") {
 }
 
 function firstEvent(id) {
+  // the first line names every seat, so for a large run it is far longer than one small read
   try {
     const fd = fs.openSync(path.join(RUNS, id, "events.ndjson"), "r");
-    const buf = Buffer.alloc(8192);
-    const n = fs.readSync(fd, buf, 0, buf.length, 0);
-    fs.closeSync(fd);
-    return JSON.parse(buf.subarray(0, n).toString().split("\n")[0]);
+    try {
+      const parts = [];
+      for (let pos = 0; pos < 8_000_000; ) {
+        const buf = Buffer.alloc(65536);
+        const n = fs.readSync(fd, buf, 0, buf.length, pos);
+        if (!n) break;
+        const cut = buf.subarray(0, n).indexOf(10);
+        parts.push(buf.subarray(0, cut >= 0 ? cut : n));
+        if (cut >= 0) break;
+        pos += n;
+      }
+      return JSON.parse(Buffer.concat(parts).toString("utf8"));
+    } finally { fs.closeSync(fd); }
   } catch {
     return null;
   }
@@ -181,6 +192,116 @@ function events(req, res, id, from) {
   tick();
 }
 
+// One run's facts in a few numbers: the print page and a shared page start from this, without replaying the run.
+const summaries = new Map();
+function summary(id) {
+  const evFile = path.join(RUNS, id, "events.ndjson");
+  let size = 0;
+  try { size = fs.statSync(evFile).size; } catch { return null; }
+  const had = summaries.get(id);
+  if (had && had.size === size) return had.value;
+  const first = firstEvent(id) || {};
+  let done = null;
+  try {
+    const txt = fs.readFileSync(evFile, "utf8");
+    const i = txt.lastIndexOf('"t":"done"');
+    if (i >= 0) done = JSON.parse(txt.slice(txt.lastIndexOf("\n", i) + 1, txt.indexOf("\n", i)));
+  } catch {}
+  let claims = 0, sources = 0;
+  const publishers = new Set();
+  try {
+    for (const l of fs.readFileSync(path.join(RUNS, id, "ledger.jsonl"), "utf8").split("\n")) {
+      if (!l) continue;
+      let r; try { r = JSON.parse(l); } catch { continue; }
+      if (r.status === "dropped") continue;
+      if (r.type === "claim") claims++;
+      else if (r.type === "source") { sources++; try { publishers.add((r.publisher || new URL(r.url).hostname).toLowerCase()); } catch {} }
+    }
+  } catch {}
+  const value = {
+    id, question: first.question || "", started_at: first.started_at || null, mode: first.mode === "free" ? "free" : "orchestrated",
+    agents: (first.seats || []).filter((s) => s.role === "researcher" || s.role === "redteam").length,
+    status: done ? done.status : "running", minutes: done?.totals?.minutes ?? null, tokens: done?.totals?.tokens ?? null,
+    claims, sources, publishers: publishers.size, has_report: fs.existsSync(path.join(RUNS, id, "report.md")),
+  };
+  summaries.set(id, { size, value });
+  return value;
+}
+
+// Sharing one run. A share is a long random token kept in the run's folder (share.json). Whoever opens /s/<token>
+// gets that run and nothing else: no list of runs, no form, no other run's files, no attached files. The token is
+// the whole permission, so such a request is not asked for the access code. Removing share.json ends it.
+const PUBLIC_BASE = (process.env.SWARM_PUBLIC_BASE || "").replace(/\/+$/, "");
+const shares = new Map();
+let sharesRead = 0;
+function shareToken(id) {
+  try { return JSON.parse(fs.readFileSync(path.join(RUNS, id, "share.json"), "utf8")).token || null; } catch { return null; }
+}
+function sharedRun(token) {
+  if (!shares.has(token) && Date.now() - sharesRead > 5000) {
+    sharesRead = Date.now();
+    shares.clear();
+    for (const d of fs.readdirSync(RUNS)) { const t = safeId(d) && shareToken(d); if (t) shares.set(t, d); }
+  }
+  const id = shares.get(token);
+  return id && shareToken(id) === token ? id : null;
+}
+const shareUrl = (token, fwd) => `${PUBLIC_BASE || (fwd ? FWD_BASE : "")}/s/${token}`;
+function share(id, method, fwd) {
+  const f = path.join(RUNS, id, "share.json");
+  if (method === "DELETE") { try { fs.unlinkSync(f); } catch {} shares.clear(); sharesRead = 0; return { shared: false }; }
+  let token = shareToken(id);
+  if (!token && method === "POST") {
+    token = crypto.randomBytes(24).toString("base64url");
+    fs.writeFileSync(f, JSON.stringify({ token, created_at: new Date().toISOString() }) + "\n", { mode: 0o600 });
+    shares.set(token, id);
+  }
+  return token ? { shared: true, url: shareUrl(token, fwd), absolute: Boolean(PUBLIC_BASE) } : { shared: false };
+}
+
+// The report as a PDF: the print page of the run, laid out by headless Chrome when one is configured
+// (CHROME_BIN and puppeteer-core, the latter by PUPPETEER_CORE when it is not installed here). The file is kept
+// beside the report and made again when the report or the print page changes.
+let pdfQueue = Promise.resolve();
+async function loadPuppeteer() {
+  if (!process.env.CHROME_BIN) return null;
+  for (const spec of [process.env.PUPPETEER_CORE, "puppeteer-core"].filter(Boolean)) {
+    try { const m = createRequire(import.meta.url)(spec); return m.default || m; } catch {}
+  }
+  return null;
+}
+function pdfFresh(id, evidence) {
+  const out = path.join(RUNS, id, evidence ? "report.evidence.pdf" : "report.pdf");
+  try {
+    const made = fs.statSync(out).mtimeMs;
+    const inputs = [path.join(RUNS, id, "report.md"), path.join(RUNS, id, "ledger.jsonl"), ...["print.html", "print.js", "print.css", "figures.js", "mathmd.js"].map((f) => path.join(PUB, f))];
+    return inputs.every((f) => { try { return fs.statSync(f).mtimeMs <= made; } catch { return true; } }) ? out : null;
+  } catch { return null; }
+}
+async function reportPdf(id, evidence) {
+  const fresh = pdfFresh(id, evidence);
+  if (fresh) return fresh;
+  const pptr = await loadPuppeteer();
+  if (!pptr) return null;
+  const job = pdfQueue.then(async () => {
+    const again = pdfFresh(id, evidence);
+    if (again) return again;
+    const browser = await pptr.launch({ executablePath: process.env.CHROME_BIN, args: ["--no-sandbox", "--no-zygote", "--disable-gpu"], headless: true });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`http://127.0.0.1:${PORT}/run/${encodeURIComponent(id)}/print${evidence ? "?evidence=1" : ""}`, { waitUntil: "domcontentloaded", timeout: 60_000 });
+      await page.waitForFunction("window.__printReady === true", { timeout: 180_000 });
+      const foot = `<div style="font: 7.5px Helvetica, Arial, sans-serif; color: #8a8882; width: 100%; padding: 0 18mm; display: flex; justify-content: space-between;"><span>Prometheus on Gemini · ${id}</span><span><span class="pageNumber"></span> / <span class="totalPages"></span></span></div>`;
+      const bytes = await page.pdf({ format: "A4", printBackground: true, displayHeaderFooter: true, headerTemplate: "<span></span>", footerTemplate: foot, margin: { top: "17mm", bottom: "19mm", left: "18mm", right: "18mm" }, timeout: 180_000 });
+      const out = path.join(RUNS, id, evidence ? "report.evidence.pdf" : "report.pdf");
+      fs.writeFileSync(out, bytes);
+      return out;
+    } finally { await browser.close().catch(() => {}); }
+  });
+  pdfQueue = job.catch(() => {});
+  return job;
+}
+
 // Access code for requests that arrive through a public tunnel. A request made on this machine directly
 // (no proxy headers) is not asked for it. Starting a run spends the owner's API key, so the code is required
 // for every page, file and call, and wrong guesses are rate-limited.
@@ -221,12 +342,12 @@ const FWD_KEY = (process.env.SWARM_FORWARD_KEY || "").trim();
 const FWD_BASE = (process.env.SWARM_FORWARD_BASE || "/gprometheus").replace(/\/+$/, "");
 const FWD_MAX_AGENTS = Number(process.env.SWARM_FORWARD_MAX_AGENTS || 128);
 const sameSecret = (a, b) => { const x = crypto.createHash("sha256").update(a).digest(), y = crypto.createHash("sha256").update(b).digest(); return crypto.timingSafeEqual(x, y); };
-function underBase(buf, ext) {
+function underBase(buf, ext, base, gp) {
   let s = buf.toString("utf8");
-  if (ext === ".js" || ext === ".mjs" || ext === ".html") s = s.replaceAll("from '/", `from '${FWD_BASE}/`);
+  if (ext === ".js" || ext === ".mjs" || ext === ".html") s = s.replaceAll("from '/", `from '${base}/`);
   if (ext === ".html") {
-    s = s.replaceAll('href="/', `href="${FWD_BASE}/`).replaceAll('src="/', `src="${FWD_BASE}/`)
-      .replace("<script", `<script>window.GP = { base: ${JSON.stringify(FWD_BASE)}, static: false, forwarded: true };</script>\n<script`);
+    s = s.replaceAll('href="/', `href="${base}/`).replaceAll('src="/', `src="${base}/`)
+      .replace("<script", `<script>window.GP = ${JSON.stringify({ base, static: false, ...gp })};</script>\n<script`);
     if (!s.includes('name="robots"')) s = s.replace("<head>", '<head>\n<meta name="robots" content="noindex, nofollow">');
   }
   return s;
@@ -244,6 +365,8 @@ function runCodeOk(req) {
   if (given) { mine.push(nowMs); tries.set(ip, mine); }
   return false;
 }
+
+const GONE_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><title>Prometheus on Gemini</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f8f7f3;color:#1c1c1a;font:16px/1.5 system-ui,sans-serif}@media (prefers-color-scheme:dark){body{background:#121211;color:#ebeae5}}p{max-width:28em;margin:0 16px;text-align:center}</style></head><body><p>This link is not shared any more.</p></body></html>`;
 
 function readBody(req) {
   return new Promise((ok, bad) => {
@@ -264,17 +387,49 @@ http
         req.url = fm[2].startsWith("/") ? fm[2] : "/" + fm[2];
         res.setHeader("x-robots-tag", "noindex, nofollow");
       }
+      // a shared run: /s/<token>/… is that one run and nothing else
+      let shared = null;
+      const sm = req.url.match(/^\/s\/([A-Za-z0-9_-]{20,64})(?=[/?]|$)(.*)$/);
+      if (sm) {
+        const id = sharedRun(sm[1]);
+        res.setHeader("x-robots-tag", "noindex, nofollow");
+        if (!id) return send(res, 404, GONE_PAGE, "text/html; charset=utf-8");
+        shared = { id, token: sm[1] };
+        req.url = sm[2].startsWith("/") ? sm[2] : "/" + sm[2];
+      }
+      const base = (fwd ? FWD_BASE : "") + (shared ? `/s/${shared.token}` : "");
       const url = new URL(req.url, "http://x");
       const p = url.pathname;
-      if (!fwd && gate(req, res, p, url)) return;
+      if (!fwd && !shared && gate(req, res, p, url)) return;
       if (fwd && p === "/api/ping") return send(res, 200, { ok: true });
+      if (shared) {
+        if (req.method !== "GET") return send(res, 403, { error: "This link only reads one run." });
+        if (p === "/api/runs") return send(res, 200, []);
+        const own = p.match(/^\/api\/runs\/([^/]+)\/(stream|events|summary|report\.pdf|file\/[a-z.]+)$/);
+        if (p.startsWith("/api/") && !(own && own[1] === shared.id)) return send(res, 404, { error: "not found" });
+      }
       if (p === "/api/runs" && req.method === "GET") return send(res, 200, listRuns(fwd));
       if (p === "/api/runs" && req.method === "POST") {
         if (fwd && !runCodeOk(req)) return send(res, 403, { error: "The run code is needed to start a run here.", need: "run_code" });
         return send(res, 200, { id: startRun(await readBody(req), fwd) });
       }
       let m = p.match(/^\/api\/runs\/([^/]+)\//);
-      if (fwd && m && safeId(m[1]) && hiddenFromForward(m[1])) return send(res, 404, { error: "not found" });
+      if (fwd && !shared && m && safeId(m[1]) && hiddenFromForward(m[1])) return send(res, 404, { error: "not found" });
+      m = p.match(/^\/api\/runs\/([^/]+)\/share$/);
+      if (m && safeId(m[1]) && fs.existsSync(path.join(RUNS, m[1], "request.json"))) {
+        if (fwd && req.method !== "GET" && !runCodeOk(req)) return send(res, 403, { error: "The run code is needed to share a run from here.", need: "run_code" });
+        return send(res, 200, share(m[1], req.method, fwd));
+      }
+      m = p.match(/^\/api\/runs\/([^/]+)\/summary$/);
+      if (m && safeId(m[1])) { const s = summary(m[1]); return s ? send(res, 200, s) : send(res, 404, { error: "not found" }); }
+      m = p.match(/^\/api\/runs\/([^/]+)\/report\.pdf$/);
+      if (m && safeId(m[1])) {
+        if (!fs.existsSync(path.join(RUNS, m[1], "report.md"))) return send(res, 404, { error: "no report yet" });
+        const f = await reportPdf(m[1], url.searchParams.has("evidence"));
+        if (!f) return send(res, 501, { error: "This server cannot make PDFs; print the page instead." });
+        res.writeHead(200, { "content-type": "application/pdf", "content-disposition": `attachment; filename="prometheus-${m[1]}.pdf"`, "cache-control": "no-store" });
+        return res.end(fs.readFileSync(f));
+      }
       m = p.match(/^\/api\/runs\/([^/]+)\/stream$/);
       if (m && safeId(m[1])) return stream(req, res, m[1]);
       m = p.match(/^\/api\/runs\/([^/]+)\/events$/);
@@ -293,11 +448,12 @@ http
         return send(res, 200, fs.readFileSync(f), /\.(png|jpe?g|gif|webp|pdf)$/i.test(f) ? (TYPES[path.extname(f).toLowerCase()] || "application/octet-stream") : "text/plain; charset=utf-8");
       }
       if (p.startsWith("/api/")) return send(res, 404, { error: "not found" });
-      let f = p === "/ask" ? path.join(PUB, "ask.html") : p === "/" || p.startsWith("/run/") ? path.join(PUB, "index.html") : path.join(PUB, path.normalize(p).replace(/^(\.\.[/\\])+/, ""));
-      if (!f.startsWith(PUB) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) f = path.join(PUB, "index.html");
+      const printPage = shared ? p === "/print" : /^\/run\/[^/]+\/print$/.test(p);
+      let f = printPage ? path.join(PUB, "print.html") : p === "/ask" && !shared ? path.join(PUB, "ask.html") : p === "/" || p.startsWith("/run/") ? path.join(PUB, "index.html") : path.join(PUB, path.normalize(p).replace(/^(\.\.[/\\])+/, ""));
+      if (!f.startsWith(PUB) || !fs.existsSync(f) || fs.statSync(f).isDirectory() || (shared && path.basename(f) === "ask.html")) f = path.join(PUB, "index.html");
       if (!fs.existsSync(f)) return send(res, 404, "page not built yet", "text/plain");
       const ext = path.extname(f);
-      if (fwd && (ext === ".html" || ext === ".js" || ext === ".mjs")) return send(res, 200, underBase(fs.readFileSync(f), ext), TYPES[ext]);
+      if ((base || shared) && (ext === ".html" || ext === ".js" || ext === ".mjs")) return send(res, 200, underBase(fs.readFileSync(f), ext, base, { forwarded: fwd, ...(shared ? { share: { id: shared.id } } : {}) }), TYPES[ext]);
       return send(res, 200, fs.readFileSync(f), TYPES[ext] || "application/octet-stream");
     } catch (e) {
       return send(res, 400, { error: String(e.message || e) });

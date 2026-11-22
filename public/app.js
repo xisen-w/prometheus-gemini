@@ -9,6 +9,8 @@ const STATIC = !!window.GP?.static;
 const fileUrl = (id, name) => (STATIC ? `${BASE}/data/${encodeURIComponent(id)}/${name}` : `${BASE}/api/runs/${encodeURIComponent(id)}/file/${name}`);
 // Through the sharednet.ai forward, starting a run takes the run code; it is asked for once and kept in this browser.
 const FORWARDED = !!window.GP?.forwarded;
+// opened through a share link: this one run and nothing else
+const SHARE = window.GP?.share || null;
 const runCode = { get: () => { try { return localStorage.getItem('gp_run_code') || ''; } catch { return ''; } }, set: (v) => { try { v ? localStorage.setItem('gp_run_code', v) : localStorage.removeItem('gp_run_code'); } catch {} } };
 async function postRun(body, given) {
   const code = (given ?? runCode.get()).trim();
@@ -296,15 +298,26 @@ const TALLY = [
 function openRun(id) {
   S = freshState(id);
   touch();
-  $('#topnav').innerHTML = `<a href="${BASE}/">${STATIC ? 'All runs' : 'New question'}</a>`;
+  $('#topnav').innerHTML = SHARE ? '' : `<a href="${BASE}/">${STATIC ? 'All runs' : 'New question'}</a>`;
   app.innerHTML = `
   <section class="run">
-    <header class="run-head">
-      <div class="meta" id="meta"><span class="live">Connecting</span></div>
+    <header class="run-head" id="runhead">
+      <div class="headrow">
+        <div class="meta" id="meta"><span class="live">Connecting</span></div>
+        <div class="acts" id="acts">
+          <button class="act" id="actpdf" type="button" hidden>Export PDF</button>
+          ${STATIC || SHARE ? '' : '<button class="act" id="actshare" type="button">Share</button>'}
+        </div>
+      </div>
+      <div class="sharebox" id="sharebox" hidden></div>
       <h1 class="q" id="q">&nbsp;</h1>
-      <ol class="rail" id="rail">${PHASES.map((p) => `<li data-p="${p}">${PHASE_LABEL[p]}</li>`).join('')}</ol>
-      <div class="rail-now" id="railnow"></div>
-      <dl class="tally" id="tally">${TALLY.map(([k, l, sh]) => `<div><dd data-k="${k}">0</dd><dt>${sh ? `<span class="long">${l}</span><span class="short">${sh}</span>` : l}</dt><span class="sub" data-s="${k}"></span></div>`).join('')}</dl>
+      <button class="qmore" id="qmore" type="button" hidden>Show the full question</button>
+      <p class="digest" id="digest" hidden></p>
+      <div class="progress" id="progress">
+        <ol class="rail" id="rail">${PHASES.map((p) => `<li data-p="${p}">${PHASE_LABEL[p]}</li>`).join('')}</ol>
+        <div class="rail-now" id="railnow"></div>
+        <dl class="tally" id="tally">${TALLY.map(([k, l, sh]) => `<div><dd data-k="${k}">0</dd><dt>${sh ? `<span class="long">${l}</span><span class="short">${sh}</span>` : l}</dt><span class="sub" data-s="${k}"></span></div>`).join('')}</dl>
+      </div>
     </header>
     <nav class="tabs" role="tablist">${TABS.map(([k, l, s]) => `<button role="tab" data-tab="${k}" aria-selected="false"><span class="long">${l}</span><span class="short">${s}</span><span class="count" data-c="${k}"></span></button>`).join('')}</nav>
     <div class="pane" data-pane="report" hidden></div>
@@ -314,6 +327,9 @@ function openRun(id) {
     <div class="pane" data-pane="compare" hidden></div>
   </section>`;
   $$('.tabs button').forEach((b) => b.addEventListener('click', () => { S.tabChosen = true; setTab(b.dataset.tab, true); }));
+  $('#actpdf').addEventListener('click', exportPdf);
+  $('#actshare')?.addEventListener('click', toggleShare);
+  $('#qmore').addEventListener('click', () => { const open = $('#q').classList.toggle('open'); $('#qmore').textContent = open ? 'Show less' : 'Show the full question'; });
   const hashTab = location.hash.slice(1).split('/')[0];
   if (TABS.some(([k]) => k === hashTab)) { S.tabChosen = true; setTab(hashTab); } else setTab('room');
   gotDone = false; queue = [];
@@ -327,6 +343,59 @@ function setTab(k, push) {
   $$('.pane').forEach((p) => { p.hidden = p.dataset.pane !== k; });
   if (push) history.replaceState(null, '', `#${k}`);
   renderPane(k, true);
+}
+
+// A question can be one line or a page of instructions. A long one is set smaller and folded, so the
+// report is not pushed off the screen by its own prompt.
+function setQuestion(text) {
+  const q = $('#q');
+  q.textContent = text;
+  const n = [...String(text)].reduce((a, ch) => a + (/[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/.test(ch) ? 2 : 1), 0);
+  q.classList.toggle('mid', n > 110 && n <= 260);
+  q.classList.toggle('long', n > 260);
+  $('#qmore').hidden = n <= 260;
+}
+
+async function exportPdf(e) {
+  const btn = e.currentTarget, label = btn.textContent;
+  const page = SHARE ? `${BASE}/print` : `${BASE}/run/${encodeURIComponent(S.id)}/print`;
+  btn.disabled = true; btn.textContent = 'Preparing the PDF';
+  try {
+    const r = await fetch(`${BASE}/api/runs/${encodeURIComponent(S.id)}/report.pdf`, { cache: 'no-store' });
+    if (r.status === 501) { window.open(`${page}?auto=1`, '_blank', 'noopener'); return; }
+    if (!r.ok) throw new Error(String(r.status));
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(await r.blob());
+    a.download = `prometheus-${S.id}.pdf`;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 20000);
+  } catch {
+    btn.textContent = 'Could not make the PDF'; await new Promise((ok) => setTimeout(ok, 2500));
+  } finally { btn.disabled = false; btn.textContent = label; }
+}
+
+async function toggleShare() {
+  const box = $('#sharebox');
+  if (!box.hidden) { box.hidden = true; return; }
+  const call = async (method) => {
+    const code = runCode.get();
+    const r = await fetch(`${BASE}/api/runs/${encodeURIComponent(S.id)}/share`, { method, headers: code ? { 'x-run-code': code } : {} });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.need === 'run_code' ? 'Sharing from here needs the run code. Enter it once on the first page, then come back.' : j.error || `Server said ${r.status}`);
+    return j;
+  };
+  const paint = (j) => {
+    if (!j.shared) { box.innerHTML = '<p>Sharing is off. The old link no longer opens anything.</p>'; return; }
+    const url = j.absolute ? j.url : location.origin + j.url;
+    const local = !j.absolute && /^(localhost|127\.|\[::1\])/.test(location.hostname);
+    box.innerHTML = `<p>Anyone with this link can read this run, and only this run: no other questions, no way to start one.${local ? ' This address works on this machine only.' : ''}</p>
+      <div class="sharerow"><input readonly value="${esc(url)}" aria-label="Share link"><button class="act solid" type="button" data-a="copy">Copy link</button><button class="act" type="button" data-a="stop">Stop sharing</button></div>`;
+    $('input', box).addEventListener('focus', (ev) => ev.target.select());
+    $('[data-a=copy]', box).onclick = async (ev) => { try { await navigator.clipboard.writeText(url); ev.target.textContent = 'Copied'; } catch { $('input', box).select(); } };
+    $('[data-a=stop]', box).onclick = async () => { try { paint(await call('DELETE')); } catch (err) { box.innerHTML = `<p>${esc(err.message)}</p>`; } };
+  };
+  box.hidden = false; box.innerHTML = '<p>Making the link…</p>';
+  try { paint(await call('POST')); } catch (err) { box.innerHTML = `<p>${esc(err.message)}</p>`; }
 }
 
 // ---------- stream
@@ -398,7 +467,7 @@ function handle(ev, animate) {
       S.run = ev;
       for (const s of ev.seats || []) S.seats.set(s.id, s);
       document.title = `${ev.question || 'Run'} · Prometheus`;
-      $('#q').textContent = ev.question || ev.id;
+      setQuestion(ev.question || ev.id);
       if (ev.mode === 'free') {
         // no fixed steps: agents loop until the judges vote to stop
         $$('#rail li').forEach((li) => { if (['plan', 'crosscheck', 'redteam', 'fix'].includes(li.dataset.p)) li.remove(); else if (li.dataset.p === 'research') li.textContent = 'Agents loop'; else if (li.dataset.p === 'gate') li.textContent = 'Judges stop it'; });
@@ -502,6 +571,25 @@ function updateHeader() {
     const html = subs[k] || '&nbsp;';
     if (s.innerHTML !== html) s.innerHTML = html;
   }
+  // a finished run: its numbers in one line, the full record of the run one click away
+  const head = $('#runhead'), dig = $('#digest');
+  if (S.done && head && !head.classList.contains('ended')) head.classList.add('ended');
+  if (S.done && dig) {
+    const judge = S.judges[S.judges.length - 1];
+    const full = (n) => Math.round(n).toLocaleString('en-US');
+    const bits = [
+      `${full(vals.agents)} agents`, `${full(vals.claims)} key claims`, `${full(vals.sources)} sources from ${full(vals.publishers)} publishers`,
+      S.challenges.size ? `${full(S.challenges.size)} red-team challenges${d.open.length ? `, ${d.open.length} still open` : ''}` : '',
+      lastGate ? `evidence gate ${lastGate.pass ? 'passed' : 'not passed'}` : '', judge ? `judge ${judge.pass ? 'passed' : 'not passed'}` : '',
+    ].filter(Boolean).join(' · ');
+    const html = `<span>${esc(bits)}</span><button class="more" type="button">${head.classList.contains('open') ? 'Hide the run' : 'How the run went'}</button>`;
+    if (dig.dataset.v !== html) {
+      dig.innerHTML = html; dig.dataset.v = html; dig.hidden = false;
+      $('.more', dig).onclick = () => { head.classList.toggle('open'); dig.dataset.v = ''; updateHeader(); };
+    }
+  }
+  const pdf = $('#actpdf');
+  if (pdf && !STATIC) pdf.hidden = !S.reportHtml;
   // tab counts
   const counts = { evidence: d.keyClaims.length || '', questions: S.questions.size || '', room: '' };
   for (const [k, v] of Object.entries(counts)) { const el = $(`.tabs [data-c="${k}"]`); if (el) el.textContent = v; }
@@ -757,10 +845,19 @@ function renderReport(el) {
     return;
   }
   const d = derive();
-  const note = `Each tag is a claim. Open one to see its sources, the exact quotes, and what the red team found. ${d.keyClaims.length} key claims, ${d.keptSources.length} sources, ${d.publishers.size} publishers.`;
+  const note = S.done ? 'Each tag is a claim. Open one to see its sources, the exact quotes, and what the red team found.'
+    : `Each tag is a claim. Open one to see its sources, the exact quotes, and what the red team found. ${d.keyClaims.length} key claims, ${d.keptSources.length} sources, ${d.publishers.size} publishers.`;
   if (el.dataset.v !== String(S.reports) + (S.reportHtml.length)) {
-    el.innerHTML = `<p class="report-note">${esc(note)}</p><article class="prose">${S.reportHtml}</article>`;
+    el.innerHTML = `<p class="report-note">${esc(note)}</p><nav class="toc" hidden></nav><article class="prose">${S.reportHtml}</article>`;
     el.dataset.v = String(S.reports) + (S.reportHtml.length);
+    // a long report gets a list of its sections to jump to
+    const heads = $$('.prose > h2', el);
+    if (heads.length >= 4) {
+      const toc = $('.toc', el);
+      toc.innerHTML = `<details><summary>Contents <span>${heads.length} sections</span></summary><ol>${heads.map((h, i) => `<li><button type="button" data-i="${i}">${esc(h.textContent.replace(/\s*C\d+-\d+/g, ''))}</button></li>`).join('')}</ol></details>`;
+      toc.hidden = false;
+      toc.addEventListener('click', (e) => { const b = e.target.closest('button[data-i]'); if (b) heads[+b.dataset.i].scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+    }
   } else {
     $('.report-note', el).textContent = note;
   }
@@ -983,5 +1080,6 @@ function renderDrawer(id) {
 // ---------- routing
 const route = location.pathname.startsWith(BASE) ? location.pathname.slice(BASE.length) : location.pathname;
 const runMatch = route.match(/^\/run\/([^/]+)/);
-if (runMatch) openRun(decodeURIComponent(runMatch[1]));
+if (SHARE) openRun(SHARE.id);
+else if (runMatch) openRun(decodeURIComponent(runMatch[1]));
 else showAsk();
