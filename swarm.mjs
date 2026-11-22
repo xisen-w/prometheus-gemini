@@ -52,6 +52,28 @@ class Run {
   }
   addRows(seat, rows, rejected = []) {
     if (!rows.length && !rejected.length) return;
+    // The same quote from the same page, already logged under another agent's claim: the new claim is the same
+    // fact found again. It stays in the ledger (it is one more agent finding it) and is marked same_as, and its
+    // author is told at the next turn, so the team stops spending turns on what it already has.
+    this.quotes ??= new Map();
+    this.pages ??= new Map();
+    this.repeats ??= new Map();
+    for (const r of rows) {
+      if (r.type !== "source" || r.status === "dropped" || !r.url || !r.claim) continue;
+      const page = this.pages.get(r.url) || { claims: new Set(), seats: new Set() };
+      page.claims.add(r.claim); page.seats.add(seat); this.pages.set(r.url, page);
+      const q = String(r.quote || "").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+      if (q.length < 24) continue;
+      const key = `${r.url}|${q.slice(0, 80)}`;
+      const first = this.quotes.get(key);
+      if (!first) { this.quotes.set(key, { claim: r.claim, seat }); continue; }
+      if (first.seat === seat || first.claim === r.claim) continue;
+      const claim = rows.find((x) => x.type === "claim" && x.id === r.claim);
+      if (claim && !claim.same_as) claim.same_as = first.claim;
+      const list = this.repeats.get(seat) || [];
+      if (!list.some((x) => x.claim === r.claim)) list.push({ claim: r.claim, of: first.claim, by: first.seat, url: r.url });
+      this.repeats.set(seat, list);
+    }
     for (const r of rows) {
       this.rows.push(r);
       fs.appendFileSync(path.join(this.dir, "ledger.jsonl"), JSON.stringify(r) + "\n");
@@ -1038,6 +1060,17 @@ function boardFor(run, seat) {
   ].filter(Boolean).join("\n\n");
 }
 
+// What the team already holds, by page, so an agent can see at a glance what has been mined; and which of its own
+// claims last turn repeated a fact someone had logged first.
+function coverageFor(run, seat) {
+  const pages = [...(run.pages || new Map())].map(([url, x]) => [url, x.claims.size, x.seats.size]).sort((a, b) => b[1] - a[1]).slice(0, 30);
+  const mine = (run.repeats?.get(seat.id) || []).splice(0);
+  return [
+    pages.length ? `PAGES THE TEAM HAS ALREADY TAKEN CLAIMS FROM (${run.pages.size} in all; most used first). A page here has been read by teammates: open it again only for something the ledger still lacks.\n${pages.map(([u, c, a]) => `- ${u.slice(0, 140)} : ${c} claim${c === 1 ? "" : "s"} by ${a} agent${a === 1 ? "" : "s"}`).join("\n")}` : "",
+    mine.length ? `FOUND AGAIN: these claims of yours cite a quote a teammate had already logged, so each stands as one more agent finding the same fact, not as a new one. Nothing to fix; spend this turn on what the ledger does not hold yet.\n${mine.slice(0, 12).map((x) => `- ${x.claim} is the same fact as ${x.of} (${x.by}), from ${x.url.slice(0, 110)}`).join("\n")}` : "",
+  ].filter(Boolean).join("\n\n");
+}
+
 function freeStats(run) {
   const v = run.view();
   const confirmed = v.keyClaims.filter((c) => v.sourcesOf(c.id).some((s) => v.checksOf(s.id).some((k) => k.result === "confirmed"))).length;
@@ -1060,6 +1093,8 @@ function workerInput(run, seat, n) {
   return `THE QUESTION: ${run.req.question}
 
 ${boardFor(run, seat)}
+
+${coverageFor(run, seat)}
 
 ${line}
 ${ch.length ? `\nOPEN CHALLENGES ON YOUR CLAIMS (fix the claim, add sources or drop it, then write a resolution row):\n${ch.map((x) => `- ${x.id} on ${x.claim} by ${x.by}: ${x.text}`).join("\n")}\n` : ""}${wrong.length ? `\nJUDGE CHECKS THAT DID NOT CONFIRM YOUR SOURCES:\n${wrong.map((k) => `- ${k.source}: ${k.result} by ${k.by}: ${k.note || ""}`).join("\n")}\n` : ""}${rejected.length ? `\nLEDGER ROWS THE SYSTEM REJECTED LAST TURN:\n${rejected.join("\n")}\n` : ""}${mine.length ? `\nYOUR CLAIMS SO FAR:\n${mine.slice(-30).map(brief).join("\n")}\n` : ""}${others.length ? `\nRECENT CLAIMS BY OTHERS (do not redo these; cross-check a key one from a different publisher if it matters and has one publisher):\n${others.map(brief).join("\n")}\n` : ""}

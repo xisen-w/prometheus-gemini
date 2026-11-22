@@ -487,3 +487,11 @@ label.attach input[type=file] { margin-top: 8px; font: 13px var(--sans); color: 
 .topo-table th, .topo-table td { text-align: left; padding: 6px 16px 6px 0; border-bottom: 1px solid var(--line); }
 .topo-table th { font-weight: 500; color: var(--muted); font-size: 12.5px; }
 .topo-table td:nth-child(n+4), .topo-table th:nth-child(n+4) { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* the same fact logged by several agents */
+.ev .same { margin-top: 7px; font: 12.5px/1.4 var(--sans); color: var(--muted); }
+.ev .same summary { cursor: pointer; list-style: none; display: inline-flex; gap: 6px; align-items: baseline; }
+.ev .same summary::-webkit-details-marker { display: none; }
+.ev .same summary::before { content: "+"; font-family: var(--mono); color: var(--faint); }
+.ev .same[open] summary::before { content: "−"; }
+.ev .same > div { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }

@@ -158,6 +158,45 @@ const touch = () => { D = null; };
 const srcHref = (url) => (/^attachment:/.test(url || '') ? `${STATIC ? `${BASE}/data/${encodeURIComponent(S.id)}/attachments/` : `${BASE}/api/runs/${encodeURIComponent(S.id)}/attachment/`}${String(url).replace(/^attachment:\/*/, '').replace(/^attachments\//, '').replace(/#.*$/, '').split('/').map(encodeURIComponent).join('/')}` : url);
 const byId = (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true });
 
+// The same fact, logged by several agents. Every agent writes its own claim for what it finds, so on a narrow
+// question many of them find the same thing: the ledger then holds one fact many times. Two claims are taken as
+// one fact when they cite the same quote from the same page, or cite the same page and say nearly the same
+// thing. Nothing is removed from the ledger; the Evidence tab shows a fact once and says how often it was found.
+let FACTS = null;
+function facts() {
+  const sig = `${S.id}|${S.claims.size}|${S.sources.size}`;
+  if (FACTS && FACTS.sig === sig) return FACTS;
+  const d = derive();
+  const squash = (t) => String(t || '').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
+  const words = (t) => {
+    const x = String(t || '').toLowerCase(), out = new Set(x.match(/[a-z0-9]{3,}/g) || []);
+    const han = x.replace(/[^一-鿿]/g, '');
+    for (let i = 0; i + 1 < han.length; i++) out.add(han.slice(i, i + 2));
+    return out;
+  };
+  const alike = (a, b) => { if (!a.size || !b.size) return 0; let n = 0; for (const w of a) if (b.has(w)) n++; return n / (a.size + b.size - n); };
+  const leaderOf = new Map(), groups = new Map(), tok = new Map(), byQuote = new Map(), byUrl = new Map();
+  for (const c of d.keptClaims.slice().sort((a, b) => byId(a.id, b.id))) {
+    const srcs = (d.srcByClaim.get(c.id) || []).filter((x) => x.status !== 'dropped');
+    const urls = new Set(srcs.map((x) => x.url).filter(Boolean));
+    const quotes = srcs.map((x) => [x.url, squash(x.quote)]).filter(([u, q]) => u && q.length >= 24).map(([u, q]) => `${u}|${q.slice(0, 80)}`);
+    const mine = words(c.text);
+    let lead = null;
+    for (const q of quotes) if (byQuote.has(q)) { lead = byQuote.get(q); break; }
+    if (!lead) {
+      let tried = 0;
+      search: for (const u of urls) for (const l of byUrl.get(u) || []) { if (++tried > 400) break search; if (alike(mine, tok.get(l)) >= 0.6) { lead = l; break search; } }
+    }
+    if (!lead) { lead = c.id; tok.set(lead, mine); groups.set(lead, []); for (const u of urls) { if (!byUrl.has(u)) byUrl.set(u, []); byUrl.get(u).push(lead); } }
+    for (const q of quotes) if (!byQuote.has(q)) byQuote.set(q, lead);
+    leaderOf.set(c.id, lead); groups.get(lead).push(c.id);
+  }
+  let distinctKey = 0;
+  for (const ids of groups.values()) if (ids.some((id) => S.claims.get(id)?.key)) distinctKey++;
+  FACTS = { sig, leaderOf, groups, distinctKey };
+  return FACTS;
+}
+
 function claimInfo(id) {
   const d = derive();
   const c = S.claims.get(id);
@@ -590,7 +629,7 @@ function updateHeader() {
     const judge = S.judges[S.judges.length - 1];
     const full = (n) => Math.round(n).toLocaleString('en-US');
     const bits = [
-      `${full(vals.agents)} agents`, `${full(vals.claims)} key claims`, `${full(vals.sources)} sources from ${full(vals.publishers)} publishers`,
+      `${full(vals.agents)} agents`, facts().distinctKey < vals.claims ? `${full(facts().distinctKey)} distinct facts in ${full(vals.claims)} key claims` : `${full(vals.claims)} key claims`, `${full(vals.sources)} sources from ${full(vals.publishers)} publishers`,
       S.challenges.size ? `${full(S.challenges.size)} red-team challenges${d.open.length ? `, ${d.open.length} still open` : ''}` : '',
       lastGate ? `evidence gate ${lastGate.pass ? 'passed' : 'not passed'}` : '', judge ? `judge ${judge.pass ? 'passed' : 'not passed'}` : '',
     ].filter(Boolean).join(' · ');
@@ -916,21 +955,31 @@ function renderEvidence0(el) {
   const other = infos.filter((x) => !x.c.key && x.c.status !== 'dropped');
   const gone = infos.filter((x) => x.c.status === 'dropped');
   const single = key.filter((x) => x.i.single).length, contra = key.filter((x) => x.i.contra).length;
-  const show = S.evFilter === 'flagged' ? key.filter(flagged) : key;
+  // one row per fact: the first key claim of each group stands for it, the rest are listed under it
+  const F = facts(), seen = new Set(), oneEach = [];
+  for (const x of key) {
+    const lead = F.leaderOf.get(x.c.id) || x.c.id;
+    if (seen.has(lead)) continue;
+    seen.add(lead);
+    const same = (F.groups.get(lead) || []).filter((id) => id !== x.c.id);
+    oneEach.push({ ...x, same, by: new Set([x.c.by, ...same.map((id) => S.claims.get(id)?.by)].filter(Boolean)).size });
+  }
+  const repeats = key.length - oneEach.length;
+  const show = S.evFilter === 'flagged' ? oneEach.filter(flagged) : oneEach;
   const nf = [...S.notFound.values()];
   el.innerHTML = `
-    <div class="ev-sum"><span><span class="num">${key.length}</span> key claims</span><span><span class="num">${d.keptSources.length}</span> sources</span><span><span class="num">${d.publishers.size}</span> publishers</span><span><span class="num">${single}</span> single-source</span><span><span class="num">${contra}</span> with contradicting evidence</span></div>
+    <div class="ev-sum"><span><span class="num">${oneEach.length}</span> distinct facts</span><span><span class="num">${key.length}</span> key claims${repeats ? ` (${repeats} repeat a fact another agent logged)` : ''}</span><span><span class="num">${d.keptSources.length}</span> sources</span><span><span class="num">${d.publishers.size}</span> publishers</span><span><span class="num">${single}</span> single-source</span><span><span class="num">${contra}</span> with contradicting evidence</span></div>
     <div class="ev-key"><span><b class="pass mono">✓</b> quote confirmed on re-check</span><span><b class="fail mono">✗</b> quote wrong</span><span><b class="faint mono">?</b> unreachable</span><span><b class="warn">outlined</b> contradicts the claim</span></div>
-    <div class="seg"><button data-f="all" class="${S.evFilter === 'all' ? 'on' : ''}">All</button><button data-f="flagged" class="${S.evFilter === 'flagged' ? 'on' : ''}">Flagged (${key.filter(flagged).length})</button></div>
+    <div class="seg"><button data-f="all" class="${S.evFilter === 'all' ? 'on' : ''}">All</button><button data-f="flagged" class="${S.evFilter === 'flagged' ? 'on' : ''}">Flagged (${oneEach.filter(flagged).length})</button></div>
     <ul class="ev">${show.map(evRow).join('') || '<li class="empty">Nothing flagged.</li>'}</ul>
     ${other.length ? `<details class="more-claims"><summary>Other claims (${other.length})</summary><ul class="ev">${other.map(evRow).join('')}</ul></details>` : ''}
     ${gone.length ? `<details class="more-claims"><summary>Dropped (${gone.length})</summary><ul class="ev">${gone.map(evRow).join('')}</ul></details>` : ''}
     <h2 class="section-h" style="margin-top:40px">Searched, not found</h2>
     ${nf.length ? `<ul class="nf">${nf.map((n) => `<li>${esc(n.text)} <span class="faint">· ${esc(n.by || '')}</span><div class="s">${esc(n.searched || '')}</div></li>`).join('')}</ul>` : '<p class="muted" style="font-size:14px">Nothing recorded.</p>'}`;
   $$('.seg button', el).forEach((b) => b.addEventListener('click', () => { S.evFilter = b.dataset.f; renderEvidence(el); refreshChips(); }));
-  $$('.ev > li[data-claim]', el).forEach((r) => r.addEventListener('click', (e) => { if (!e.target.closest('a')) openDrawer(r.dataset.claim); }));
+  $$('.ev > li[data-claim]', el).forEach((r) => r.addEventListener('click', (e) => { if (!e.target.closest('a, details')) openDrawer(r.dataset.claim); }));
 }
-function evRow({ c, i }) {
+function evRow({ c, i, same = [], by = 1 }) {
   const d = derive();
   const groups = new Map();
   for (const s of i.live) {
@@ -954,7 +1003,7 @@ function evRow({ c, i }) {
     i.openChals.length && `<span class="tag fail">${plural(i.openChals.length, 'open challenge')}</span>`,
     !i.openChals.length && i.chals.length && `<span class="tag">challenged, resolved</span>`,
   ].filter(Boolean).join('');
-  return `<li data-claim="${esc(c.id)}" class="${c.status === 'dropped' ? 'gone' : ''}"><div><div class="ctx">${citeChip(c.id)}${esc(c.text)}</div>${flags ? `<div class="cflags">${flags}</div>` : ''}</div><div class="pubs">${toks || '<span class="faint" style="font-size:13px">no sources</span>'}</div></li>`;
+  return `<li data-claim="${esc(c.id)}" class="${c.status === 'dropped' ? 'gone' : ''}"><div><div class="ctx">${citeChip(c.id)}${esc(c.text)}</div>${flags ? `<div class="cflags">${flags}</div>` : ''}${same.length ? `<details class="same"><summary>Found ${same.length + 1} times, by ${plural(by, 'agent')}</summary><div>${same.map(citeChip).join('')}</div></details>` : ''}</div><div class="pubs">${toks || '<span class="faint" style="font-size:13px">no sources</span>'}</div></li>`;
 }
 
 // Questions
