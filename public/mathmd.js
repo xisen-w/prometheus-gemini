@@ -20,9 +20,22 @@ export function protectMath(src) {
     return `XMATHX${held.length - 1}X`;
   };
   let out = String(src).replace(/\$\$([^$]{1,2000}?)\$\$/g, (raw, tex) => hold(tex, true, raw));
-  out = out.replace(/(^|[^\\$\w])\$(?!\s)((?:\\.|[^$\\\n]){1,160}?)\$(?![\d$])/g, (raw, pre, tex) => {
-    if (/\s$/.test(tex) || !SIGNAL.test(tex)) return raw;
-    return pre + hold(tex, false, '$' + tex + '$');
-  });
+  // inline math, scanned by hand: an opening $ pairs only with the very next $, and a pair that fails the
+  // tests gives both dollars back, so "($500K … $250K … $\ge 2$" still finds the formula at the end
+  let res = "";
+  for (let i = 0; i < out.length; i++) {
+    const ch = out[i];
+    if (ch === "\\" && out[i + 1] === "$") { res += "\\$"; i++; continue; }
+    if (ch !== "$") { res += ch; continue; }
+    const prev = out[i - 1] || "";
+    let j = i + 1;
+    while (j < out.length && j - i <= 162 && out[j] !== "\n" && !(out[j] === "$" && out[j - 1] !== "\\")) j++;
+    const tex = out[j] === "$" ? out.slice(i + 1, j) : null;
+    const ok = tex && !/\w/.test(prev) && !/^\s|\s$/.test(tex) && !/[\d$]/.test(out[j + 1] || "") && SIGNAL.test(tex);
+    if (!ok) { res += ch; continue; }
+    res += hold(tex, false, "$" + tex + "$");
+    i = j;
+  }
+  out = res;
   return { src: out, restore: (html) => html.replace(/XMATHX(\d+)X/g, (_, i) => held[+i] ?? '') };
 }
